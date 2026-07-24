@@ -1,5 +1,8 @@
+import { join } from 'path';
+
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ServeStaticModule } from '@nestjs/serve-static';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -14,6 +17,10 @@ import { UsersModule } from './modules/users/users.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: ['.env.local', '.env'],
+    }),
+    ServeStaticModule.forRoot({
+      rootPath: join(process.cwd(), 'bucket', 'assets'),
+      serveRoot: '/assets',
     }),
     DatabaseModule,
     HealthModule,

@@ -13,20 +13,18 @@ alwaysApply: false
 
 AuthService는 User Entity를 직접 바꾸지 말고 `UserService` 사용.
 
-JWT Payload 최소화: `sub`, `role`, `tokenType`만. 이름·전화·생년월일 등 개인정보·자주 바뀌는 값 금지.
+JWT Payload 최소화: `sub`, `role`, `tokenType` (+ 세션 식별용 `sid`). 이름·전화·생년월일 등 개인정보·자주 바뀌는 값 금지.
 
-초기 RBAC는 단순 Role (`USER`/`PARTNER`/`ADMIN`). 세부 Permission 테이블은 실제 필요 시.
+초기 RBAC는 `UserRoleType` (`CONSUMER` / `PARTNER_*` / `*_OPERATOR` / `PLATFORM_ADMIN`). 세부 Permission 테이블은 실제 필요 시.
 
 ## API 경로
 
 ```text
 POST /auth/signup|login|refresh|logout
+POST /auth/login-id/check|nickname/check|accounts/verify
+GET /banks
 GET|PATCH /users/me
 PATCH /users/me/password
-
-GET /admin/users
-GET /admin/users/:userId
-PATCH /admin/users/:userId/status
 ```
 
 URL에 과도한 동사 금지 (`/get-list`, `/change-status`). REST 자원 중심. 명확한 명령만 동사 허용 (`POST /auth/login`, `POST .../unlock`).
@@ -60,6 +58,8 @@ export class UserNotFoundException extends NotFoundException {
 ```
 
 오류 응답: `statusCode`, `code`, `message`, `path`, `timestamp`.
+
+프론트(NT)는 `code`를 `ApiError.code`로 매핑한다. (레거시 `error` 필드는 호환용으로 읽을 수 있음)
 
 의미 없는 catch→재래핑 금지. catch는 DB→업무 오류 변환, 외부 API 변환, 보상/로그가 필요할 때만.
 
