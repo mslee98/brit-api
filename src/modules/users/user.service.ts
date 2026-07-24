@@ -51,6 +51,8 @@ export class UserService {
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(UserProfileEntity)
     private readonly profileRepository: Repository<UserProfileEntity>,
+    @InjectRepository(UserRoleEntity)
+    private readonly roleRepository: Repository<UserRoleEntity>,
   ) {}
 
   async existsByLoginId(loginId: string): Promise<boolean> {
@@ -83,6 +85,14 @@ export class UserService {
       select: ['nickname'],
     });
     return profile?.nickname ?? null;
+  }
+
+  async getPrimaryRole(userId: string): Promise<UserRoleType> {
+    const role = await this.roleRepository.findOne({
+      where: { userId },
+      order: { grantedAt: 'ASC' },
+    });
+    return role?.role ?? UserRoleType.CONSUMER;
   }
 
   async createUserInTransaction(

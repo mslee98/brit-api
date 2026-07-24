@@ -47,7 +47,6 @@ const RESERVED_LOGIN_IDS = new Set([
 ]);
 
 export type AuthTokensResponse = {
-  success: true;
   user: {
     id: string;
     loginId: string;
@@ -163,31 +162,19 @@ export class AuthService {
 
     const phoneDigits = dto.identity.phone.replace(/\D/g, '');
     const octomoVerifiedAt = new Date(dto.octomo.verifiedAt);
-    try {
-      await this.octomoService.assertMessageExists({
-        phoneDigits,
-        verifiedAt: octomoVerifiedAt,
-      });
-    } catch (error) {
-      if (error instanceof Error && error.message === 'OCTOMO_EXPIRED') {
-        throw AuthDomainException.octomoExpired();
-      }
-      throw AuthDomainException.octomoInvalid();
-    }
+    await this.octomoService.assertMessageExists({
+      phoneDigits,
+      verifiedAt: octomoVerifiedAt,
+    });
 
     const identityPepper =
       this.configService.getOrThrow<string>('IDENTITY_PEPPER');
     const accountNumber = dto.bankAccount.accountNumber.replace(/\D/g, '');
     const accountNumberHash = hashAccountNumber(accountNumber, identityPepper);
 
-    let verifyPayload;
-    try {
-      verifyPayload = await this.accountVerifyTokenService.verify(
-        dto.bankAccount.accountVerifyToken,
-      );
-    } catch {
-      throw AuthDomainException.accountVerifyExpired();
-    }
+    const verifyPayload = await this.accountVerifyTokenService.verify(
+      dto.bankAccount.accountVerifyToken,
+    );
 
     if (
       verifyPayload.bankCode !== dto.bankAccount.bankCode ||
@@ -312,10 +299,13 @@ export class AuthService {
       throw AuthDomainException.invalidCredentials();
     }
 
-    const accessToken = await this.signAccessToken(user.id, session.id);
+    const accessToken = await this.signAccessToken(
+      user.id,
+      session.id,
+      await this.userService.getPrimaryRole(user.id),
+    );
 
     return {
-      success: true,
       user: {
         id: user.id,
         loginId: user.loginId,
@@ -346,11 +336,11 @@ export class AuthService {
       throw AuthDomainException.invalidCredentials();
     }
 
-    const tokens = await this.createSessionTokens(user.id);
+    const role = await this.userService.getPrimaryRole(user.id);
+    const tokens = await this.createSessionTokens(user.id, role);
     await this.userService.touchLastLogin(user.id);
 
     return {
-      success: true,
       user: {
         id: user.id,
         loginId: user.loginId,
@@ -396,6 +386,7 @@ export class AuthService {
     const accessToken = await this.signAccessToken(
       session.userId,
       session.id,
+      await this.userService.getPrimaryRole(session.userId),
     );
 
     return {
@@ -415,7 +406,10 @@ export class AuthService {
     );
   }
 
-  private async createSessionTokens(userId: string): Promise<{
+  private async createSessionTokens(
+    userId: string,
+    role: string,
+  ): Promise<{
     accessToken: string;
     refreshToken: string;
     expiresInSec: number;
@@ -443,7 +437,7 @@ export class AuthService {
     });
     await this.sessionRepository.save(session);
 
-    const accessToken = await this.signAccessToken(userId, session.id);
+    const accessToken = await this.signAccessToken(userId, session.id, role);
     return {
       accessToken,
       refreshToken,
@@ -454,6 +448,7 @@ export class AuthService {
   private async signAccessToken(
     userId: string,
     sessionId: string,
+    role: string,
   ): Promise<string> {
     const accessExpiresSec = Number(
       this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'),
@@ -462,6 +457,7 @@ export class AuthService {
       {
         sub: userId,
         sid: sessionId,
+        role,
         tokenType: 'access',
       },
       {

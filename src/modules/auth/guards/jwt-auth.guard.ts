@@ -13,6 +13,7 @@ import type { AuthenticatedUser } from '../../../common/types/authenticated-user
 type AccessTokenPayload = {
   sub: string;
   sid: string;
+  role: string;
   tokenType: 'access';
 };
 
@@ -30,33 +31,36 @@ export class JwtAuthGuard implements CanActivate {
     const header = request.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
       throw new UnauthorizedException({
-        error: 'UNAUTHORIZED',
+        code: 'UNAUTHORIZED',
         message: '인증이 필요해요.',
       });
     }
 
     const token = header.slice('Bearer '.length);
+    let payload: AccessTokenPayload;
     try {
-      const payload = await this.jwtService.verifyAsync<AccessTokenPayload>(
-        token,
-        {
-          secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
-        },
-      );
-      if (payload.tokenType !== 'access') {
-        throw new Error('invalid token type');
-      }
-      request.user = {
-        userId: payload.sub,
-        sessionId: payload.sid,
-        tokenType: 'access',
-      };
-      return true;
+      payload = await this.jwtService.verifyAsync<AccessTokenPayload>(token, {
+        secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+      });
     } catch {
       throw new UnauthorizedException({
-        error: 'UNAUTHORIZED',
+        code: 'UNAUTHORIZED',
         message: '인증이 필요해요.',
       });
     }
+
+    if (payload.tokenType !== 'access' || !payload.sub || !payload.sid) {
+      throw new UnauthorizedException({
+        code: 'UNAUTHORIZED',
+        message: '인증이 필요해요.',
+      });
+    }
+
+    request.user = {
+      userId: payload.sub,
+      sessionId: payload.sid,
+      tokenType: 'access',
+    };
+    return true;
   }
 }

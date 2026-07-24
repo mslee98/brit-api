@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
+import { AuthDomainException } from './exceptions/auth.exceptions';
+
 export type AccountVerifyPayload = {
   typ: 'account_verify';
   name: string;
@@ -48,13 +50,24 @@ export class AccountVerifyTokenService {
     const secret = this.configService.getOrThrow<string>(
       'ACCOUNT_VERIFY_SECRET',
     );
-    const payload = await this.jwtService.verifyAsync<AccountVerifyPayload>(
-      token,
-      { secret },
-    );
-    if (payload.typ !== 'account_verify') {
-      throw new Error('INVALID_ACCOUNT_VERIFY_TOKEN');
+    try {
+      const payload = await this.jwtService.verifyAsync<AccountVerifyPayload>(
+        token,
+        { secret },
+      );
+      if (payload.typ !== 'account_verify') {
+        throw AuthDomainException.accountVerifyExpired();
+      }
+      return payload;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'getStatus' in error &&
+        typeof (error as { getStatus: () => number }).getStatus === 'function'
+      ) {
+        throw error;
+      }
+      throw AuthDomainException.accountVerifyExpired();
     }
-    return payload;
   }
 }

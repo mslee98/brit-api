@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+import { AuthDomainException } from './exceptions/auth.exceptions';
+
 @Injectable()
 export class OctomoService {
   constructor(private readonly configService: ConfigService) {}
@@ -38,20 +40,24 @@ export class OctomoService {
     );
 
     if (!response.ok) {
-      throw new Error('OCTOMO_INVALID');
+      throw AuthDomainException.octomoInvalid();
     }
 
     const body = (await response.json()) as { exists?: boolean };
     if (!body.exists) {
-      throw new Error('OCTOMO_INVALID');
+      throw AuthDomainException.octomoInvalid();
     }
   }
 
   private assertVerifiedAtFresh(verifiedAt: Date): void {
     const ageMs = Date.now() - verifiedAt.getTime();
     const maxAgeMs = 30 * 60 * 1000;
-    if (Number.isNaN(verifiedAt.getTime()) || ageMs > maxAgeMs || ageMs < -60_000) {
-      throw new Error('OCTOMO_EXPIRED');
+    if (
+      Number.isNaN(verifiedAt.getTime()) ||
+      ageMs > maxAgeMs ||
+      ageMs < -60_000
+    ) {
+      throw AuthDomainException.octomoExpired();
     }
   }
 }
