@@ -1,0 +1,57 @@
+---
+description: 트랜잭션, 동시성, DB 제약, 삭제·감사 로그, 마이그레이션, 로깅·설정
+globs: src/**/*.ts
+alwaysApply: false
+---
+
+# NestJS Data Integrity Rules
+
+## 트랜잭션
+
+여러 데이터 변경이 하나의 업무 단위일 때 Service에서 시작.
+
+단일 테이블 단순 저장에는 불필요. 트랜잭션 내부 외부 HTTP 호출 금지.
+순서: 외부 API 사전 호출 → DB 트랜잭션 → 이벤트/후처리. 장시간 유지 금지.
+
+## 동시성
+
+잔액·수량·상태 전이는 단순 find→save 금지. 비관적 잠금, 조건부 UPDATE, Unique, Version, 트랜잭션, 멱등성 키 사용.
+
+```ts
+.update(UserWalletEntity)
+.set({ balance: () => "balance - :amount" })
+.where("user_id = :userId")
+.andWhere("balance >= :amount", { amount })
+```
+
+앱 사전 조회만으로 무결성 보장하지 않음. DB 제약과 함께 사용.
+
+## 제약조건
+
+Service 중복 확인과 별도로 Unique Index 필수. 동시 요청은 DB Unique가 최종 보호.
+
+## 삭제
+
+- Hard delete 가능: 임시 인증, 만료 토큰, 테스트 데이터
+- Soft/상태 변경: 사용자, 관리자, 거래, 정산, 분쟁, 감사 로그
+
+탈퇴는 `isDeleted`만 추가하지 않음. `WITHDRAWN`/`withdrawnAt`/익명화 등 요구사항에 맞춤.
+현재 PENDING/ACTIVE/SUSPENDED만 필요하면 탈퇴 상태 선추가 금지.
+
+## 관리자 감사 로그
+
+중요 변경(상태 등)에 기록: admin_id, action, target_type/id, before/after(변경 필드만), reason, ip, created_at.
+감사 로그 수정 금지. 개인정보 전체 저장 금지. 사유는 DTO로 수신.
+
+## 마이그레이션
+
+운영 `synchronize: true` 금지. Entity 변경은 Migration.
+기존 데이터 있는 컬럼 NOT NULL 직추가 금지: Nullable 추가 → Backfill → 검증 → NOT NULL.
+
+## 로깅·설정
+
+로그 금지: 비밀번호, PIN, Token, 전체 전화/계좌/주민번호, 암호화 키.
+로그 대상: 외부 오류, 예상 밖 예외, 인증 실패 누적, 관리자 중요 작업, 정합성/트랜잭션 실패.
+모든 메서드 시작·종료 로그 금지.
+
+`process.env` 직접 접근 금지 → `ConfigService.getOrThrow`. 시작 시 필수 env 검증. Secret 기본값 금지.

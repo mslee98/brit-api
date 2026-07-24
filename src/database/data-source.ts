@@ -1,0 +1,33 @@
+import 'dotenv/config';
+import { DataSource } from 'typeorm';
+
+import { UserSessionEntity } from '../modules/auth/infrastructure/entities/user-session.entity';
+import { BankEntity } from '../modules/banks/infrastructure/entities/bank.entity';
+import { IdentityVerificationEntity } from '../modules/users/infrastructure/entities/identity-verification.entity';
+import { UserBankAccountEntity } from '../modules/users/infrastructure/entities/user-bank-account.entity';
+import { UserConsentEntity } from '../modules/users/infrastructure/entities/user-consent.entity';
+import { UserProfileEntity } from '../modules/users/infrastructure/entities/user-profile.entity';
+import { UserRoleEntity } from '../modules/users/infrastructure/entities/user-role.entity';
+import { UserEntity } from '../modules/users/infrastructure/entities/user.entity';
+
+export default new DataSource({
+  type: 'postgres',
+  host: process.env.DATABASE_HOST,
+  port: Number(process.env.DATABASE_PORT ?? 5432),
+  username: process.env.DATABASE_USERNAME,
+  password: process.env.DATABASE_PASSWORD,
+  database: process.env.DATABASE_NAME,
+  entities: [
+    UserEntity,
+    UserProfileEntity,
+    UserRoleEntity,
+    UserBankAccountEntity,
+    UserConsentEntity,
+    IdentityVerificationEntity,
+    UserSessionEntity,
+    BankEntity,
+  ],
+  migrations: ['src/database/migrations/*.ts'],
+  synchronize: false,
+  logging: process.env.NODE_ENV !== 'production',
+});

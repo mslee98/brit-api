@@ -1,0 +1,60 @@
+---
+description: NestJS DTO·Controller·Service·Repository 계층 책임과 네이밍 규칙
+globs: src/**/*.ts,test/**/*.ts
+alwaysApply: false
+---
+
+# NestJS Layer Rules
+
+## DTO
+
+요청/응답 DTO 분리. Entity를 요청·응답 타입으로 쓰지 않음.
+
+네이밍: `Create{Domain}Dto`, `Update{Domain}Dto`, `Search{Domain}Dto`, `Change{Domain}{Property}Dto`, `{Domain}ResponseDto`, `{Domain}ListItemResponseDto`.
+
+모든 외부 입력은 class-validator로 검증. Service에서 형식 검증 반복 금지.
+
+- DTO: 입력 형식
+- Service: 업무 규칙
+- DB: 최종 무결성
+
+`PUT`=전체 교체, `PATCH`=부분. PartialType 사용 시 수정 불가 필드(본인인증 이름·전화 등)는 제외.
+
+응답은 `UserResponseDto.from(entity)` 같은 정적 팩토리. 복잡할 때만 `user.mapper.ts`.
+
+## Controller
+
+담당: 라우팅, DTO, 인증 정보, Guard, Service 호출, HTTP 상태, Swagger.
+
+금지: Repository 직접 호출, 해시, 트랜잭션, 도메인 판단, 중복 확인, 복잡한 조립.
+
+```ts
+@Get("me")
+@UseGuards(JwtAuthGuard)
+async getMyProfile(@CurrentUser() currentUser: AuthenticatedUser): Promise<UserResponseDto> {
+  const user = await this.userService.getUserById(currentUser.userId);
+  return UserResponseDto.from(user);
+}
+```
+
+## Service
+
+유스케이스·비즈니스 규칙·트랜잭션 경계·상태 전이·여러 Repository 조합.
+
+메서드명: `createUser`, `changeUserStatus`, `suspendUser` (❌ `process`/`handle`/`manage`).
+
+상태 전이는 덮어쓰지 말고 `validateStatusTransition`으로 허용 전이 검증. 단순하면 private 메서드, 복잡해지면 Policy 검토.
+
+40~50줄 이상·중첩 3단·이질 도메인 혼합 시 분리 검토. 줄 수만 줄이는 무의미한 private 분리는 하지 않음.
+
+## Repository
+
+초기: TypeORM `Repository`를 Service에 직접 주입 가능.
+
+커스텀 Repository 도입 조건: 복잡 조회 반복, 동일 QueryBuilder 재사용, JOIN/집계 복잡.
+
+단순 위임 래퍼(`findOne`/`save`만 전달) 금지. 업무 용어 메서드만:
+
+```ts
+findActiveUserByPhoneNumber(phoneNumber: string): Promise<UserEntity | null>
+```

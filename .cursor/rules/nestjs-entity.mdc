@@ -1,0 +1,69 @@
+---
+description: TypeORM Entity 설계 — Boolean/Enum, 공통 컬럼, FK, Nullable, 금액, 개인정보, UserEntity 기준
+globs: src/**/*.entity.ts,src/**/entities/**/*.ts
+alwaysApply: false
+---
+
+# NestJS Entity Rules
+
+## 동일 의미 = 동일 이름·타입
+
+`useYn`/`isUse`/`enabled`/`active` 혼용 금지. 신규는 boolean:
+
+```ts
+@Column({ name: "is_active", type: "boolean", default: true })
+isActive: boolean;
+```
+
+Boolean 접두사: `is`(상태), `has`(보유), `can`(가능), `requires`(필요).
+
+업무 상태가 2개 이상이면 Boolean 여러 개 대신 **Enum** (`PENDING`/`ACTIVE`/`SUSPENDED` 등 대문자 영문).
+
+## 공통 컬럼
+
+```ts
+@PrimaryGeneratedColumn("uuid") id: string;
+@CreateDateColumn({ name: "created_at", type: "timestamptz" }) createdAt: Date;
+@UpdateDateColumn({ name: "updated_at", type: "timestamptz" }) updatedAt: Date;
+```
+
+Soft Delete(`deletedAt`)는 복구·감사 필요가 있을 때만. 습관적 적용 금지.
+
+`BaseEntity`는 id/createdAt/updatedAt만. 도메인 상태·생성자·비즈니스 메서드 넣지 않음.
+
+## 네이밍·타입
+
+| 영역 | 규칙 |
+|------|------|
+| TS | camelCase |
+| DB | snake_case (`name` 옵션 명시) |
+| FK | `{entity}Id` / `{entity}_id` |
+| 문자열 | `varchar` 길이 필수, DTO MaxLength와 일치 |
+| Nullable | `string \| null` (optional `?` 금지). undefined=미전달, null=DB 없음 |
+| 날짜/시각 | `timestamptz` + `Date`. DATE/TIME은 문자열(`YYYY-MM-DD` / `HH:mm:ss`) 권장 |
+| 금액 | float/double 금지. 원 단위 `bigint`(string), 소수 `decimal`(string) |
+
+## 보안
+
+비밀번호·PIN·주민번호·계좌·복구토큰 평문 저장 금지. `passwordHash` 등 해시. Entity를 API 응답으로 직접 반환하지 않음. 응답 DTO에 hash/토큰/전체 계좌 포함 금지.
+
+## P0 사용자 스키마 (승인됨)
+
+로그인 계정과 프로필·역할을 분리한다.
+
+```text
+users              → 로그인 계정·상태 (loginId, passwordHash, phoneE164, status)
+user_profiles      → 본인정보·OCTOMO·거래 PIN (users 1:1)
+user_roles         → 역할 매핑 (users 1:N, 복합 PK)
+user_bank_accounts → 인증 계좌 (users 1:N, ACTIVE 부분유니크)
+user_sessions      → Refresh Token·기기 (auth 모듈 소유)
+banks              → 은행 마스터
+```
+
+추가 분리는 1:N·별도 생명주기·접근권한 상이·대용량·조회패턴 완전 상이·법적 격리일 때만.
+
+필수 인덱스 예: `login_id`, `phone_e164`, `nickname`, `identity_key_hash` unique.
+
+## 컬럼 추가 전
+
+프로젝트 전체에서 같은 의미 필드(`isActive`, `useYn`, `status` 등) 검색. 이미 있으면 기존 이름·타입 따름. 불일치 시 새 형식 추가하지 말고 통일 방향 제안.

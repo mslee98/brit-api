@@ -1,0 +1,99 @@
+---
+description: NestJS API 핵심 원칙, 기술 스택, 도메인 모듈 구조, Cursor 구현 행동 규칙
+globs: src/**/*.ts,test/**/*.ts
+alwaysApply: true
+---
+
+# NestJS Core Architecture
+
+## 프로젝트 목적
+
+NestJS API 서버. 현재 범위: 사용자/관리자 API, 인증·인가, 사용자 상태, 관리자 권한, 사용자 조회·관리.
+향후 거래·업체·정산·분쟁으로 확장 가능하되, **현재 필요 기능만** 단순 구현한다.
+
+## 최우선 원칙
+
+1. 단순한 구조
+2. 일관된 코드 패턴
+3. 명확한 책임 분리
+4. 동일한 의미 → 동일한 표현
+5. 트랜잭션 안정성 / 데이터 무결성
+6. 테스트 가능 / 확장 가능한 모듈
+7. **과도한 추상화 금지**
+
+## 기술 스택
+
+NestJS, TypeScript, TypeORM, PostgreSQL, Passport, JWT, bcrypt, class-validator, class-transformer, Swagger.
+
+새 라이브러리 추가 전 NestJS/기존 스택으로 해결 가능한지 확인한다. 불필요한 라이브러리 금지.
+
+## 금지하는 과설계
+
+특별한 이유 없이 사용하지 않음:
+
+- 불필요한 인터페이스/추상 클래스 계층
+- 단순 CRUD용 복잡한 디자인 패턴
+- 구현체 1개인 Factory/Strategy
+- 범용 Repository 래퍼
+- 의미 없는 Manager/Handler/Processor
+- 과도한 CQRS, 불분명한 미래 기능 선구현
+
+명시적 코드를 우선한다. 읽는 사람이 별도 문서 없이 의도를 이해해야 한다.
+
+## 디렉터리 구조
+
+파일 유형별(`controllers/`, `services/`)로 나누지 말고 **도메인별**로 배치한다.
+
+```text
+src/
+├─ config/
+├─ common/          # decorators, dto, filters, guards, types, utils
+├─ database/        # database.module, data-source, migrations, seeds
+└─ modules/
+   ├─ auth/
+   ├─ users/
+   ├─ banks/
+   └─ admins/
+```
+
+도메인 모듈 예 (`users`):
+
+```text
+modules/users/
+├─ domain/enums/
+├─ infrastructure/entities/
+├─ dto/
+├─ exceptions/
+├─ user.controller.ts
+├─ admin-user.controller.ts
+├─ user.service.ts
+└─ users.module.ts
+```
+
+- Enum: `domain/enums/`
+- Entity: `infrastructure/entities/`
+- 포트/어댑터·Repository 래퍼 계층은 두지 않는다. Service에 TypeORM Repository를 직접 주입한다.
+
+코드가 없는 빈 디렉터리/파일을 미리 만들지 않는다. 규모가 커진 뒤 하위 디렉터리로 분리한다.
+
+## 모듈 설계
+
+- **한 도메인 = 한 모듈 소유**. 사용자 데이터는 `UsersModule`만 소유.
+- 관리자 사용자 API는 `AdminUserController` + `UserService` (별도 AdminUserService/Repository 금지).
+- `AdminsModule`: 관리자 계정·역할·권한·로그인 정책·감사 로그.
+- **다른 모듈 Repository 직접 주입 금지**. Service를 통해서만 접근.
+
+```ts
+// ❌ AdminService → UserEntity Repository 직접 주입
+// ✅ AdminService → UserService
+```
+
+## Cursor 구현 순서
+
+1. 기존 디렉터리·유사 도메인 패턴 확인
+2. 기존 Enum/공통 타입/동일 의미 컬럼·DTO 검색
+3. 기존 예외·응답 규칙 확인
+4. 새 추상화가 정말 필요한지 검토
+5. Entity + DTO Validation + Service 검증 + DB Constraint + 예외 + Swagger + 필요 테스트 + Migration을 **함께** 구현
+
+기존 패턴과 다른 구조를 임의 도입하지 않는다. 한 변경에 하나의 목적만. 업무 규칙이 불명확하면 추측하지 말고 확정/가정/추후결정/제외를 구분한다.

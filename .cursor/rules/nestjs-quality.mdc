@@ -1,0 +1,68 @@
+---
+description: 네이밍·Import·디자인 패턴·테스트·성능·캐시·금지사항·품질 체크리스트
+globs: src/**/*.ts,test/**/*.ts
+alwaysApply: false
+---
+
+# NestJS Quality & Conventions
+
+## 네이밍
+
+- 변수/메서드: 축약 남용 금지 (`userRepository`, `phoneNumber`). 허용 약어: id, dto, api, url, jwt, http, ip
+- 배열: 복수형. Boolean: `is`/`has`/`can` 질문형
+- 파일: kebab-case (`admin-user.controller.ts`, `change-user-status.dto.ts`)
+- util: 역할 명확 (`phone-number.util.ts`). ❌ `common.util.ts` / `helper.ts`
+
+## Import
+
+모듈 내부: 상대 경로 가능. 모듈 간·공통: Path Alias (`@/...`).
+`../../../../` 긴 상대 경로 금지. 순환 참조 시 `forwardRef` 전 모듈 책임 재검토.
+
+Auth↔User 상호 의존 피함. 공통 모듈에 도메인 서비스 넣어 순환을 숨기지 않음.
+
+## 디자인 패턴 (실제 필요 시에만)
+
+| 패턴 | 조건 |
+|------|------|
+| Strategy | 구현체가 실제로 여러 개 (SMS/결제/스토리지) |
+| Factory | 입력에 따라 구현체 선택. `new` 감싸기용 금지 |
+| Adapter | 외부 API 필드명을 내부로 전파하지 않음 |
+| Policy | 복잡한 규칙·다중 Service 재사용. 단순 if는 private |
+| Domain Event | 핵심 변경과 부가 작업 분리. 정합성 필수 작업은 이벤트로만 처리 금지 |
+
+## 테스트
+
+우선: 사용자 생성, 전화 중복, 상태 전이, 정지 로그인 차단, 권한, 비밀번호, 토큰 갱신, 감사 로그.
+이름에 조건·결과 명시. Controller보다 Service 업무 규칙 우선.
+
+## 성능·캐시
+
+목록에서 전체 Relation/`eager: true` 금지. N+1 방지, 필요 컬럼만 SELECT, size 상한, 무제한 조회 금지.
+목록/상세 분리 (`searchUsers` / `getUserDetail`).
+
+초기 캐시 도입 금지. 빈번·저변경·실부하·무효화 정책 명확할 때만. 권한·상태·잔액은 캐시만 의존 금지.
+
+## 금지
+
+- `any` → `unknown` + 검증
+- Non-null assertion(`!`) 남용
+- Entity 직접 반환
+- Controller에서 Repository
+- 문자열 상태값 (`"active"`) → Enum
+- Magic number/string → 상수·설정
+- 범용 `[key: string]` Update DTO
+- 무분별한 `cascade: true` / Relation eager
+- 업무 데이터 Hard Delete API
+
+## 체크리스트 (작성 후)
+
+- 도메인 모듈 배치, 타 모듈 Repository 미참조, 과추상화 없음
+- 컬럼명·타입 통일, Boolean/Enum/Nullable/길이/Index, float 금액 없음
+- 입력 검증, 요청/응답 DTO 분리, Entity 미노출, Swagger=Validation
+- 업무 규칙은 Service, 상태 전이·트랜잭션·동시성·명확한 예외
+- 해시·로그 마스킹·Guard·수정 필드 제한·JWT 최소화
+- 이름만으로 의도 파악 가능, 테스트 가능 구조
+
+## 패턴 도입 판단
+
+실제 문제 해결 / 더 이해하기 쉬움 / 테스트·변경 범위 개선 / 중복 실질 감소 / 구현체 2개 이상 / 팀원 즉시 이해 — **대부분 아니면 도입하지 않음**.
