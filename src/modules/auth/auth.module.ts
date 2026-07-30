@@ -4,22 +4,24 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { BanksModule } from '../banks/banks.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { UsersModule } from '../users/users.module';
-import { AccountVerifyTokenService } from './account-verify-token.service';
+import { AuthGuardsModule } from './auth-guards.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
 
 /**
  * 인증 모듈: 가입·로그인·토큰·세션.
- * UsersModule(UserService) + BanksModule + UserSessionEntity 소유.
+ * UsersModule(UserService) + BanksModule + NotificationsModule + UserSessionEntity 소유.
  */
 @Module({
   imports: [
     TypeOrmModule.forFeature([UserSessionEntity]),
     UsersModule,
     BanksModule,
+    NotificationsModule,
+    AuthGuardsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -29,11 +31,7 @@ import { UserSessionEntity } from './infrastructure/entities/user-session.entity
     }),
   ],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    AccountVerifyTokenService,
-    JwtAuthGuard,
-  ],
-  exports: [TypeOrmModule, JwtModule, JwtAuthGuard],
+  providers: [AuthService],
+  exports: [TypeOrmModule, JwtModule, AuthGuardsModule],
 })
 export class AuthModule {}

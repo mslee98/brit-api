@@ -19,15 +19,14 @@ import { CheckNicknameDto } from './dto/check-nickname.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { SignupDto } from './dto/signup';
-import { VerifyAccountDto } from './dto/verify-account.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @ApiTags('auth')
 /**
  * Auth HTTP 진입점.
  *
- * 가입 전 체크: login-id/check, nickname/check, accounts/verify
- * 가입: signup (201, 토큰 없음)
+ * 가입 전 체크: login-id/check, nickname/check
+ * 가입: signup (201, 토큰 없음) — 계좌·본인 외부인증 없음
  * 이후: login → refresh → logout(Bearer)
  */
 @Controller('auth')
@@ -46,13 +45,6 @@ export class AuthController {
   @ApiOperation({ summary: '닉네임 사용 가능 여부' })
   checkNickname(@Body() body: CheckNicknameDto) {
     return this.authService.checkNickname(body);
-  }
-
-  @Post('accounts/verify')
-  @HttpCode(200)
-  @ApiOperation({ summary: '계좌 예금주 확인 및 accountVerifyToken 발급' })
-  verifyAccount(@Body() body: VerifyAccountDto) {
-    return this.authService.verifyAccount(body);
   }
 
   @Post('signup')

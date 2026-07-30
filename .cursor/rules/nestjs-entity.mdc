@@ -64,6 +64,8 @@ user_bank_accounts        → 계좌 이력 (PENDING_APPROVAL 등)
 user_approval_reviews     → 가입 심사 불변 이력
 user_bank_account_reviews → 계좌 조치 이력
 user_coin_wallets         → 사용자 Coin 잔액 집계 (users 1:1)
+notification_events       → 알림 대상 업무 사건 (가입 요청 등)
+notification_recipients   → 수신자별 읽음·보관
 ```
 
 추가 분리는 1:N·별도 생명주기·접근권한 상이·대용량·조회패턴 완전 상이·법적 격리일 때만.

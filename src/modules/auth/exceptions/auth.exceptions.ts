@@ -61,10 +61,17 @@ export class AuthDomainException {
     });
   }
 
-  static accountVerifyFailed(): BadRequestException {
+  static invalidBankCode(): BadRequestException {
     return new BadRequestException({
-      code: 'ACCOUNT_VERIFY_FAILED',
-      message: '계좌를 확인할 수 없어요.',
+      code: 'INVALID_BANK_CODE',
+      message: '선택할 수 없는 은행이에요.',
+    });
+  }
+
+  static invalidAccountNumber(): BadRequestException {
+    return new BadRequestException({
+      code: 'INVALID_ACCOUNT_NUMBER',
+      message: '계좌번호 형식이 올바르지 않아요.',
     });
   }
 
@@ -75,10 +82,10 @@ export class AuthDomainException {
     });
   }
 
-  static accountVerifyExpired(): UnprocessableEntityException {
-    return new UnprocessableEntityException({
-      code: 'ACCOUNT_VERIFY_EXPIRED',
-      message: '계좌 인증이 만료됐어요. 다시 확인해 주세요.',
+  static accountNumberTaken(): ConflictException {
+    return new ConflictException({
+      code: 'ACCOUNT_NUMBER_TAKEN',
+      message: '이미 등록된 계좌번호예요.',
     });
   }
 

@@ -23,12 +23,22 @@ JWT Payload 최소화: `sub`, `role`, `tokenType` (+ 세션 식별용 `sid`). �
 
 ```text
 POST /auth/signup|login|refresh|logout
-POST /auth/login-id/check|nickname/check|accounts/verify
+POST /auth/login-id/check|nickname/check
 GET /banks
 GET|PATCH /users/me
 PATCH /users/me/password
+GET /admin/user-approvals
+GET /admin/user-approvals/:userId
+POST /admin/user-approvals/:userId/approve|reject
+GET /admin/notifications
+GET /admin/notifications/unread-count
+PATCH /admin/notifications/read-all
+PATCH /admin/notifications/:recipientNotificationId/read|archive
 ```
 
+가입 시 외부 계좌인증·본인인증 API는 두지 않는다. 계좌는 제출만 하고 `PENDING_APPROVAL`로 저장한다.
+가입 TX에서 `USER_REGISTRATION_REQUESTED` 알림을 ACTIVE ADMIN/SYS_ADMIN에게 생성한다(관리자 0명이면 사건만).
+신청자 APPROVED/REJECTED 알림 행은 승인/반려 시 저장하나, 미로그인 상태에서는 인앱 조회 대상이 아니다.
 URL에 과도한 동사 금지 (`/get-list`, `/change-status`). REST 자원 중심. 명확한 명령만 동사 허용 (`POST /auth/login`, `POST .../unlock`).
 
 ## 응답

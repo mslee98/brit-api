@@ -3,6 +3,8 @@ import { DataSource } from 'typeorm';
 
 import { UserSessionEntity } from '../modules/auth/infrastructure/entities/user-session.entity';
 import { BankEntity } from '../modules/banks/infrastructure/entities/bank.entity';
+import { NotificationEventEntity } from '../modules/notifications/infrastructure/entities/notification-event.entity';
+import { NotificationRecipientEntity } from '../modules/notifications/infrastructure/entities/notification-recipient.entity';
 import { UserApprovalReviewEntity } from '../modules/users/infrastructure/entities/user-approval-review.entity';
 import { UserBankAccountReviewEntity } from '../modules/users/infrastructure/entities/user-bank-account-review.entity';
 import { UserBankAccountEntity } from '../modules/users/infrastructure/entities/user-bank-account.entity';
@@ -30,6 +32,8 @@ export default new DataSource({
     UserCoinWalletEntity,
     UserSessionEntity,
     BankEntity,
+    NotificationEventEntity,
+    NotificationRecipientEntity,
   ],
   migrations: ['src/database/migrations/*.ts'],
   synchronize: false,

@@ -21,9 +21,9 @@ import {
 } from '../../common/utils/refresh-token.util';
 import { parseResidentRegistrationNumber } from '../users/utils/rrn.util';
 import { BanksService } from '../banks/banks.service';
+import { NotificationService } from '../notifications/notification.service';
 import { UserStatus } from '../users/domain/enums/user-status.enum';
 import { UserService } from '../users/user.service';
-import { AccountVerifyTokenService } from './account-verify-token.service';
 import { CheckLoginIdDto } from './dto/check-login-id.dto';
 import { CheckNicknameDto } from './dto/check-nickname.dto';
 import { LoginDto } from './dto/login.dto';
@@ -33,7 +33,6 @@ import {
   hasDuplicateConsentKeys,
   SignupDto,
 } from './dto/signup';
-import { VerifyAccountDto } from './dto/verify-account.dto';
 import { AuthDomainException } from './exceptions/auth.exceptions';
 import { UserSessionStatus } from './domain/enums/user-session-status.enum';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
@@ -72,12 +71,12 @@ export type SignupResponse = {
  * 인증·가입 유스케이스.
  *
  * 가입 정책 (ERD v3):
- * 1) POST /auth/accounts/verify → accountVerifyToken 발급 (위조 방지)
- * 2) POST /auth/signup → PENDING 사용자 생성, 토큰 미발급
- * 3) 관리자 승인 후 ACTIVE
- * 4) POST /auth/login → ACTIVE만 허용, 세션+JWT 발급
+ * 1) POST /auth/signup → 정보 제출, PENDING 사용자·계좌·지갑 생성 (토큰 미발급)
+ * 2) 관리자가 신원·전화·계좌를 수동 확인 후 ACTIVE
+ * 3) POST /auth/login → ACTIVE만 허용, 세션+JWT 발급
  *
- * 관련: UserService, AccountVerifyTokenService, users/utils/rrn.util, account-crypto.util
+ * 외부 본인인증·계좌 인증 API는 가입 경로에 두지 않는다.
+ * 관련: UserService, users/utils/rrn.util, account-crypto.util
  */
 @Injectable()
 export class AuthService {
@@ -87,7 +86,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly userService: UserService,
     private readonly banksService: BanksService,
-    private readonly accountVerifyTokenService: AccountVerifyTokenService,
+    private readonly notificationService: NotificationService,
     @InjectRepository(UserSessionEntity)
     private readonly sessionRepository: Repository<UserSessionEntity>,
   ) {}
@@ -110,52 +109,10 @@ export class AuthService {
   }
 
   /**
-   * 계좌 확인 토큰 발급.
-   * P0: 실계좌 API 미연동 — 입력 이름을 예금주로 신뢰하고 HMAC 해시로 토큰에 묶는다.
-   * signup 시 토큰 내용과 bankCode/account/holder/name이 일치해야 한다.
-   */
-  async verifyAccount(dto: VerifyAccountDto): Promise<{
-    verified: true;
-    holderName: string;
-    bankName: string;
-    accountNumberMasked: string;
-    accountVerifyToken: string;
-    expiresInSec: number;
-  }> {
-    const bank = await this.banksService.findActiveByCode(dto.bankCode);
-    if (!bank) {
-      throw AuthDomainException.accountVerifyFailed();
-    }
-
-    const accountNumber = dto.accountNumber.replace(/\D/g, '');
-    if (accountNumber.length < 10) {
-      throw AuthDomainException.accountVerifyFailed();
-    }
-
-    const holderName = dto.name.trim();
-
-    const pepper = this.configService.getOrThrow<string>('IDENTITY_PEPPER');
-    const accountNumberHash = hashAccountNumber(accountNumber, pepper);
-    const issued = await this.accountVerifyTokenService.issue({
-      name: holderName,
-      bankCode: dto.bankCode,
-      accountNumberHash,
-      holderName,
-    });
-
-    return {
-      verified: true,
-      holderName,
-      bankName: bank.name,
-      accountNumberMasked: maskAccountNumber(accountNumber),
-      accountVerifyToken: issued.token,
-      expiresInSec: issued.expiresInSec,
-    };
-  }
-
-  /**
    * 회원가입. 성공 시 { id, loginId, status: PENDING }. 토큰 없음.
    * RRN → birthDate/genderCode 파생 후 UserService.createUserInTransaction 호출.
+   * 계좌는 PENDING_APPROVAL로만 저장하며, 외부 계좌인증은 수행하지 않는다.
+   * 동일 TX에서 관리자용 USER_REGISTRATION_REQUESTED 알림을 생성한다.
    */
   async signup(dto: SignupDto): Promise<SignupResponse> {
     if (hasDuplicateConsentKeys(dto.consents.items)) {
@@ -198,24 +155,6 @@ export class AuthService {
     const accountHolderName = dto.bankAccount.accountHolderName.trim();
     const nickname = dto.credentials.nickname?.trim() || null;
 
-    const identityPepper =
-      this.configService.getOrThrow<string>('IDENTITY_PEPPER');
-    const accountNumber = dto.bankAccount.accountNumber.replace(/\D/g, '');
-    const accountNumberHash = hashAccountNumber(accountNumber, identityPepper);
-
-    const verifyPayload = await this.accountVerifyTokenService.verify(
-      dto.bankAccount.accountVerifyToken,
-    );
-
-    if (
-      verifyPayload.bankCode !== dto.bankAccount.bankCode ||
-      verifyPayload.accountNumberHash !== accountNumberHash ||
-      verifyPayload.holderName !== accountHolderName ||
-      verifyPayload.name !== identityName
-    ) {
-      throw AuthDomainException.accountVerifyExpired();
-    }
-
     if (accountHolderName !== identityName) {
       throw AuthDomainException.nameMismatch();
     }
@@ -224,15 +163,24 @@ export class AuthService {
       dto.bankAccount.bankCode,
     );
     if (!bank) {
-      throw AuthDomainException.accountVerifyFailed();
+      throw AuthDomainException.invalidBankCode();
     }
 
+    const identityPepper =
+      this.configService.getOrThrow<string>('IDENTITY_PEPPER');
     const encryptionKey = this.configService.getOrThrow<string>(
       'ACCOUNT_ENCRYPTION_KEY',
     );
     const pinPepper = this.configService.getOrThrow<string>(
       'TRANSACTION_PIN_PEPPER',
     );
+
+    const accountNumber = dto.bankAccount.accountNumber.replace(/\D/g, '');
+    if (accountNumber.length < 10) {
+      throw AuthDomainException.invalidAccountNumber();
+    }
+
+    const accountNumberHash = hashAccountNumber(accountNumber, identityPepper);
 
     const [passwordHash, pinHash, accountNumberEncrypted] = await Promise.all([
       hashSecret(dto.credentials.loginPassword),
@@ -269,6 +217,17 @@ export class AuthService {
           holderName: accountHolderName,
           consents,
         });
+
+        const adminUserIds =
+          await this.userService.findActiveAdminUserIds(manager);
+        await this.notificationService.createRegistrationRequestedInTransaction(
+          manager,
+          {
+            applicantUserId: user.id,
+            recipientUserIds: adminUserIds,
+          },
+        );
+
         return user.id;
       });
     } catch (error) {
@@ -485,7 +444,7 @@ export class AuthService {
       throw AuthDomainException.identityExists();
     }
     if (constraint.includes('account_number_hash')) {
-      throw AuthDomainException.accountVerifyFailed();
+      throw AuthDomainException.accountNumberTaken();
     }
   }
 }

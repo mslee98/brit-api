@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { AuthGuardsModule } from '../auth/auth-guards.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { AdminUserApprovalsController } from './admin-user-approvals.controller';
 import { UserApprovalReviewEntity } from './infrastructure/entities/user-approval-review.entity';
 import { UserBankAccountReviewEntity } from './infrastructure/entities/user-bank-account-review.entity';
 import { UserBankAccountEntity } from './infrastructure/entities/user-bank-account.entity';
@@ -28,7 +31,10 @@ import { UserService } from './user.service';
       UserBankAccountReviewEntity,
       UserCoinWalletEntity,
     ]),
+    NotificationsModule,
+    AuthGuardsModule,
   ],
+  controllers: [AdminUserApprovalsController],
   providers: [UserService],
   exports: [TypeOrmModule, UserService],
 })

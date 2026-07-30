@@ -11,7 +11,7 @@ import { SignupSecurityDto } from './signup-security.dto';
  * POST /auth/signup 요청 루트.
  *
  * 구조: identity / credentials / bankAccount / security / consents
- * 선행: POST /auth/accounts/verify → bankAccount.accountVerifyToken
+ * 외부 계좌·본인인증 없음. 제출 후 PENDING → 관리자 승인.
  *
  * 필수 동의: SERVICE, PRIVACY, UNIQUE_IDENTIFIER, BANK_ACCOUNT (isAgreed=true)
  * nickname은 선택. RRN은 000000-0000000. pin은 숫자 6자리.

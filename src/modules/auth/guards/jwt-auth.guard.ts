@@ -9,13 +9,16 @@ import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 
 import type { AuthenticatedUser } from '../../../common/types/authenticated-user';
+import { UserRole } from '../../users/domain/enums/user-role.enum';
 
 type AccessTokenPayload = {
   sub: string;
   sid: string;
-  role: string;
+  role: UserRole;
   tokenType: 'access';
 };
+
+const ACCESS_ROLES = new Set<string>(Object.values(UserRole));
 
 /**
  * Access JWT 검증 Guard.
@@ -55,7 +58,12 @@ export class JwtAuthGuard implements CanActivate {
       });
     }
 
-    if (payload.tokenType !== 'access' || !payload.sub || !payload.sid) {
+    if (
+      payload.tokenType !== 'access' ||
+      !payload.sub ||
+      !payload.sid ||
+      !ACCESS_ROLES.has(payload.role)
+    ) {
       throw new UnauthorizedException({
         code: 'UNAUTHORIZED',
         message: '인증이 필요해요.',
@@ -65,6 +73,7 @@ export class JwtAuthGuard implements CanActivate {
     request.user = {
       userId: payload.sub,
       sessionId: payload.sid,
+      role: payload.role,
       tokenType: 'access',
     };
     return true;
