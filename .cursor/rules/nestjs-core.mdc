@@ -56,21 +56,26 @@ src/
    └─ admins/
 ```
 
-도메인 모듈 예 (`users`):
+도메인 모듈 예 (`users` / `auth`):
 
 ```text
 modules/users/
-├─ domain/enums/
+├─ domain/enums/          # 해당 도메인 소유 Enum (common으로 몰지 않음)
 ├─ infrastructure/entities/
-├─ dto/
-├─ exceptions/
-├─ user.controller.ts
-├─ admin-user.controller.ts
+├─ utils/                 # 도메인 유틸 (예: rrn.util)
+├─ dto/                   # 규모 커지면 request/response 또는 기능별 분리
 ├─ user.service.ts
 └─ users.module.ts
+
+modules/auth/dto/
+├─ signup/                # 가입 유스케이스별 DTO 묶음
+│  ├─ index.ts
+│  └─ signup*.dto.ts
+├─ login.dto.ts
+└─ …
 ```
 
-- Enum: `domain/enums/`
+- Enum: 소유 도메인의 `domain/enums/` (교차 사용은 import)
 - Entity: `infrastructure/entities/`
 - 포트/어댑터·Repository 래퍼 계층은 두지 않는다. Service에 TypeORM Repository를 직접 주입한다.
 

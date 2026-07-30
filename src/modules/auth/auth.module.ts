@@ -10,8 +10,11 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
-import { OctomoService } from './octomo.service';
 
+/**
+ * 인증 모듈: 가입·로그인·토큰·세션.
+ * UsersModule(UserService) + BanksModule + UserSessionEntity 소유.
+ */
 @Module({
   imports: [
     TypeOrmModule.forFeature([UserSessionEntity]),
@@ -29,7 +32,6 @@ import { OctomoService } from './octomo.service';
   providers: [
     AuthService,
     AccountVerifyTokenService,
-    OctomoService,
     JwtAuthGuard,
   ],
   exports: [TypeOrmModule, JwtModule, JwtAuthGuard],

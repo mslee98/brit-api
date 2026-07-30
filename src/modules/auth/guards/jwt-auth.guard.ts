@@ -17,6 +17,12 @@ type AccessTokenPayload = {
   tokenType: 'access';
 };
 
+/**
+ * Access JWT 검증 Guard.
+ * Authorization: Bearer <accessToken>
+ * payload: sub(userId), sid(sessionId), role, tokenType='access'
+ * 성공 시 request.user = AuthenticatedUser
+ */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(

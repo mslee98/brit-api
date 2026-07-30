@@ -11,6 +11,14 @@ import {
 import { UserEntity } from '../../../users/infrastructure/entities/user.entity';
 import { UserSessionStatus } from '../../domain/enums/user-session-status.enum';
 
+/**
+ * user_sessions — Refresh Token 세션 (AuthModule 소유).
+ *
+ * - refresh_token_hash만 저장 (원문 토큰은 클라이언트에만)
+ * - 가입(signup) 시에는 세션을 만들지 않음 (PENDING + 토큰 미발급)
+ * - 로그인/refresh 시에만 ACTIVE 세션 생성·회전
+ * - JWT access payload의 sid = 이 테이블 id
+ */
 @Entity({ name: 'user_sessions' })
 @Index('ix_user_sessions_user_status', ['userId', 'status'])
 @Index('ix_user_sessions_expires_at', ['expiresAt'])
@@ -30,7 +38,7 @@ export class UserSessionEntity {
   userId!: string;
 
   @ManyToOne(() => UserEntity, (user) => user.sessions, {
-    onDelete: 'CASCADE',
+    onDelete: 'RESTRICT',
   })
   @JoinColumn({
     name: 'user_id',
@@ -38,9 +46,6 @@ export class UserSessionEntity {
   })
   user!: UserEntity;
 
-  /**
-   * Refresh Token 원문이 아닌 해시값.
-   */
   @Column({
     type: 'varchar',
     length: 255,
@@ -48,12 +53,6 @@ export class UserSessionEntity {
   })
   refreshTokenHash!: string;
 
-  /**
-   * 프론트에서 생성한 기기 식별자.
-   *
-   * 보안 식별자로 완전히 신뢰하지 않고,
-   * 세션 표시와 기기 구분 용도로만 사용한다.
-   */
   @Column({
     type: 'varchar',
     length: 100,
@@ -87,7 +86,7 @@ export class UserSessionEntity {
   @Column({
     type: 'enum',
     enum: UserSessionStatus,
-    enumName: 'user_session_status',
+    enumName: 'session_status',
     name: 'status',
     default: UserSessionStatus.ACTIVE,
   })
@@ -112,6 +111,14 @@ export class UserSessionEntity {
     nullable: true,
   })
   revokedAt!: Date | null;
+
+  @Column({
+    type: 'varchar',
+    length: 255,
+    name: 'revoke_reason',
+    nullable: true,
+  })
+  revokeReason!: string | null;
 
   @CreateDateColumn({
     type: 'timestamptz',

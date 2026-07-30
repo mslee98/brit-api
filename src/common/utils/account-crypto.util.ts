@@ -1,3 +1,12 @@
+/**
+ * 계좌번호 암호화·해시·마스킹.
+ *
+ * - encrypt → user_bank_accounts.account_number_encrypted (BYTEA)
+ * - hash → account_number_hash (중복 검사용 HMAC hex 64자)
+ * - mask → 목록/응답 표시용 (원문·암호문 노출 금지)
+ *
+ * env: ACCOUNT_ENCRYPTION_KEY, IDENTITY_PEPPER(해시용)
+ */
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'crypto';
 
 const AES_KEY_LENGTH = 32;
@@ -12,12 +21,12 @@ function resolveAesKey(keyMaterial: string): Buffer {
 }
 
 /**
- * AES-256-GCM 암호화. 저장 형식: base64(iv).base64(tag).base64(ciphertext)
+ * AES-256-GCM 암호화. BYTEA 저장 형식: iv(12) + tag(16) + ciphertext
  */
 export function encryptAccountNumber(
   accountNumber: string,
   encryptionKey: string,
-): string {
+): Buffer {
   const key = resolveAesKey(encryptionKey);
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -26,28 +35,23 @@ export function encryptAccountNumber(
     cipher.final(),
   ]);
   const tag = cipher.getAuthTag();
-  return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
+  return Buffer.concat([iv, tag, encrypted]);
 }
 
 export function decryptAccountNumber(
-  encryptedPayload: string,
+  encryptedPayload: Buffer,
   encryptionKey: string,
 ): string {
-  const [ivB64, tagB64, dataB64] = encryptedPayload.split('.');
-  if (!ivB64 || !tagB64 || !dataB64) {
+  if (encryptedPayload.length < 28) {
     throw new Error('INVALID_ACCOUNT_CIPHERTEXT');
   }
+  const iv = encryptedPayload.subarray(0, 12);
+  const tag = encryptedPayload.subarray(12, 28);
+  const data = encryptedPayload.subarray(28);
   const key = resolveAesKey(encryptionKey);
-  const decipher = createDecipheriv(
-    'aes-256-gcm',
-    key,
-    Buffer.from(ivB64, 'base64'),
-  );
-  decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(dataB64, 'base64')),
-    decipher.final(),
-  ]);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
   return decrypted.toString('utf8');
 }
 

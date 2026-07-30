@@ -18,9 +18,9 @@ export class BankResponseDto {
   id!: number;
   code!: string;
   name!: string;
-  iconKey!: string;
-  svgFilename!: string;
-  iconUrl!: string;
+  iconKey!: string | null;
+  svgFilename!: string | null;
+  iconUrl!: string | null;
   dailyMaintenanceStart!: string | null;
   dailyMaintenanceEnd!: string | null;
   regularMaintenanceRule!: string | null;
@@ -38,7 +38,9 @@ export class BankResponseDto {
     dto.iconKey = entity.iconKey;
     dto.svgFilename = entity.svgFilename;
     const base = assetBaseUrl.replace(/\/$/, '');
-    dto.iconUrl = `${base}/assets/banks/${entity.svgFilename}`;
+    dto.iconUrl = entity.svgFilename
+      ? `${base}/assets/banks/${entity.svgFilename}`
+      : null;
     dto.dailyMaintenanceStart = formatTime(entity.dailyMaintenanceStart);
     dto.dailyMaintenanceEnd = formatTime(entity.dailyMaintenanceEnd);
     dto.regularMaintenanceRule = entity.regularMaintenanceRule;

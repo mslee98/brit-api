@@ -18,11 +18,18 @@ import { CheckLoginIdDto } from './dto/check-login-id.dto';
 import { CheckNicknameDto } from './dto/check-nickname.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { SignupDto } from './dto/signup.dto';
+import { SignupDto } from './dto/signup';
 import { VerifyAccountDto } from './dto/verify-account.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @ApiTags('auth')
+/**
+ * Auth HTTP 진입점.
+ *
+ * 가입 전 체크: login-id/check, nickname/check, accounts/verify
+ * 가입: signup (201, 토큰 없음)
+ * 이후: login → refresh → logout(Bearer)
+ */
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -50,7 +57,7 @@ export class AuthController {
 
   @Post('signup')
   @HttpCode(201)
-  @ApiOperation({ summary: '회원가입 (단일 트랜잭션)' })
+  @ApiOperation({ summary: '회원가입 (승인 대기, 토큰 미발급)' })
   signup(@Body() body: SignupDto) {
     return this.authService.signup(body);
   }

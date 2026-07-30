@@ -14,20 +14,36 @@ import { GenderCode } from '../../domain/enums/gender-code.enum';
 import { MobileCarrier } from '../../domain/enums/mobile-carrier.enum';
 import { UserEntity } from './user.entity';
 
+/**
+ * user_profiles — users와 1:1. 실명·주민번호·통신사·거래 PIN·닉네임.
+ *
+ * ERD v3 정책:
+ * - 주민등록번호는 평문 CHAR(14) `000000-0000000` (UNIQUE)
+ * - birth_date / gender_code는 클라이언트가 보내지 않고 서버가 RRN에서 파생
+ * - 로그·API 응답에 전체 RRN 노출 금지
+ *
+ * 파생 유틸: `users/utils/rrn.util.ts`
+ * 가입 저장: `UserService.createUserInTransaction`
+ */
 @Entity({ name: 'user_profiles' })
 @Index('ux_user_profiles_nickname', ['nickname'], { unique: true })
-@Index('ux_user_profiles_identity_key_hash', ['identityKeyHash'], {
-  unique: true,
-})
-@Index('ux_user_profiles_octomo_request_id', ['octomoRequestId'], {
-  unique: true,
-  where: '"octomo_request_id" IS NOT NULL',
-})
+@Index('ux_user_profiles_resident_registration_number', [
+  'residentRegistrationNumber',
+], { unique: true })
 @Check(
   'ck_user_profiles_pin_failed_count',
-  '"transaction_pin_failed_count" >= 0',
+  '"pin_failed_count" >= 0',
+)
+@Check(
+  'ck_user_profiles_rrn_format',
+  `"resident_registration_number" ~ '^[0-9]{6}-[0-9]{7}$'`,
+)
+@Check(
+  'ck_user_profiles_gender_code',
+  `"gender_code" IN ('M', 'F')`,
 )
 export class UserProfileEntity {
+  /** users.id와 동일한 PK (1:1) */
   @PrimaryColumn({
     type: 'uuid',
     name: 'user_id',
@@ -35,7 +51,7 @@ export class UserProfileEntity {
   userId!: string;
 
   @OneToOne(() => UserEntity, (user) => user.profile, {
-    onDelete: 'CASCADE',
+    onDelete: 'RESTRICT',
   })
   @JoinColumn({
     name: 'user_id',
@@ -43,6 +59,7 @@ export class UserProfileEntity {
   })
   user!: UserEntity;
 
+  /** 가입 시 제출한 실명 */
   @Column({
     type: 'varchar',
     length: 50,
@@ -51,8 +68,18 @@ export class UserProfileEntity {
   name!: string;
 
   /**
-   * PostgreSQL DATE는 시간대가 없는 날짜이므로
-   * TypeORM에서는 문자열 YYYY-MM-DD로 다루는 편이 안전하다.
+   * 전체 주민등록번호 평문. 형식: 000000-0000000
+   * UNIQUE — 동일 번호로 중복 가입 방지
+   */
+  @Column({
+    type: 'char',
+    length: 14,
+    name: 'resident_registration_number',
+  })
+  residentRegistrationNumber!: string;
+
+  /**
+   * RRN에서 파생한 생년월일 (DATE → TS는 YYYY-MM-DD 문자열 권장)
    */
   @Column({
     type: 'date',
@@ -60,99 +87,63 @@ export class UserProfileEntity {
   })
   birthDate!: string;
 
+  /** RRN에서 파생한 성별. 'M' | 'F' */
   @Column({
-    type: 'enum',
-    enum: GenderCode,
-    enumName: 'gender_code',
+    type: 'char',
+    length: 1,
     name: 'gender_code',
   })
   genderCode!: GenderCode;
 
+  /** 가입자가 선택한 통신사. 외부 인증 결과가 아니다. */
   @Column({
-    type: 'enum',
-    enum: MobileCarrier,
-    enumName: 'mobile_carrier',
+    type: 'varchar',
+    length: 20,
     name: 'mobile_carrier',
   })
   mobileCarrier!: MobileCarrier;
 
+  /** 화면 표시용 선택 닉네임. null 가능, UNIQUE(여러 NULL 허용) */
   @Column({
     type: 'varchar',
     length: 30,
     name: 'nickname',
-  })
-  nickname!: string;
-
-  /**
-   * 중복 가입 방지용 식별 해시.
-   *
-   * 주민번호나 본인 식별 원문을 저장하지 않고,
-   * 서버의 비밀값과 조합해 HMAC-SHA256 등의 방식으로 생성한다.
-   */
-  @Column({
-    type: 'char',
-    length: 64,
-    name: 'identity_key_hash',
-  })
-  identityKeyHash!: string;
-
-  /**
-   * 가입에 사용된 OCTOMO 요청 식별자.
-   *
-   * 현재 P0에서는 최종 성공 요청 ID만 보관한다.
-   * 인증 재시도 이력이 필요해지면 별도 인증 테이블로 분리한다.
-   */
-  @Column({
-    type: 'varchar',
-    length: 100,
-    name: 'octomo_request_id',
     nullable: true,
   })
-  octomoRequestId!: string | null;
+  nickname!: string | null;
 
-  @Column({
-    type: 'timestamptz',
-    name: 'phone_verified_at',
-  })
-  phoneVerifiedAt!: Date;
-
-  @Column({
-    type: 'timestamptz',
-    name: 'identity_verified_at',
-  })
-  identityVerifiedAt!: Date;
-
-  /**
-   * 사용자가 설정한 6자리 거래 PIN의 해시.
-   */
+  /** 거래 승인용 6자리 PIN의 단방향 해시 */
   @Column({
     type: 'varchar',
     length: 255,
-    name: 'transaction_pin_hash',
+    name: 'pin_hash',
   })
-  transactionPinHash!: string;
+  pinHash!: string;
 
+  /** 연속 PIN 검증 실패 횟수 */
   @Column({
     type: 'smallint',
-    name: 'transaction_pin_failed_count',
+    name: 'pin_failed_count',
     default: 0,
   })
-  transactionPinFailedCount!: number;
+  pinFailedCount!: number;
 
+  /** PIN 잠금 해제 시각. null이면 잠금 아님 */
   @Column({
     type: 'timestamptz',
-    name: 'transaction_pin_locked_until',
+    name: 'pin_locked_until',
     nullable: true,
   })
-  transactionPinLockedUntil!: Date | null;
+  pinLockedUntil!: Date | null;
 
   @Column({
     type: 'timestamptz',
-    name: 'transaction_pin_changed_at',
+    name: 'pin_changed_at',
     default: () => 'CURRENT_TIMESTAMP',
   })
-  transactionPinChangedAt!: Date;
+  pinChangedAt!: Date;
 
+  /** 스토리지 객체 경로 (URL이 아닌 키/경로) */
   @Column({
     type: 'text',
     name: 'profile_image_path',
@@ -166,14 +157,6 @@ export class UserProfileEntity {
     nullable: true,
   })
   profileImageUpdatedAt!: Date | null;
-
-  @Column({
-    type: 'varchar',
-    length: 255,
-    name: 'suspended_reason',
-    nullable: true,
-  })
-  suspendedReason!: string | null;
 
   @CreateDateColumn({
     type: 'timestamptz',

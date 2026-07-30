@@ -11,6 +11,11 @@ import {
 
 import { UserBankAccountEntity } from '../../../users/infrastructure/entities/user-bank-account.entity';
 
+/**
+ * banks — 은행 마스터 (코드·아이콘·점검 시간).
+ * user_bank_accounts.bank_code → banks.code (FK).
+ * 시드: migrations SeedBanksFull / AlignUsersToErdV3 재시드.
+ */
 @Entity({ name: 'banks' })
 @Index('ux_banks_code', ['code'], { unique: true })
 @Index('ux_banks_icon_key', ['iconKey'], { unique: true })
@@ -35,30 +40,14 @@ import { UserBankAccountEntity } from '../../../users/infrastructure/entities/us
     AND "regular_maintenance_end" IS NOT NULL
   )`,
 )
-@Check(
-  'ck_banks_regular_rule_required',
-  `(
-    "regular_maintenance_start" IS NULL
-    AND "regular_maintenance_end" IS NULL
-    AND "regular_maintenance_rule" IS NULL
-  ) OR (
-    "regular_maintenance_start" IS NOT NULL
-    AND "regular_maintenance_end" IS NOT NULL
-    AND "regular_maintenance_rule" IS NOT NULL
-  )`,
-)
 @Check('ck_banks_sort_order', '"sort_order" >= 0')
 export class BankEntity {
   @PrimaryGeneratedColumn({
-    type: 'bigint',
+    type: 'smallint',
     name: 'id',
   })
-  id!: string;
+  id!: number;
 
-  /**
-   * 외부 계좌 인증 API 및 내부 업무에서 사용하는 은행 코드.
-   * 예: 004, 088
-   */
   @Column({
     type: 'varchar',
     length: 20,
@@ -73,27 +62,22 @@ export class BankEntity {
   })
   name!: string;
 
-  /**
-   * 프론트가 은행 아이콘을 찾을 때 사용하는 안정적인 키.
-   * 예: kb, shinhan, toss
-   */
   @Column({
     type: 'varchar',
     length: 50,
     name: 'icon_key',
+    nullable: true,
   })
-  iconKey!: string;
+  iconKey!: string | null;
 
   @Column({
     type: 'varchar',
     length: 255,
     name: 'svg_filename',
+    nullable: true,
   })
-  svgFilename!: string;
+  svgFilename!: string | null;
 
-  /**
-   * TIME 타입은 TypeORM에서 문자열 HH:mm:ss로 다루는 것이 안전하다.
-   */
   @Column({
     type: 'time',
     name: 'daily_maintenance_start',
@@ -108,12 +92,6 @@ export class BankEntity {
   })
   dailyMaintenanceEnd!: string | null;
 
-  /**
-   * 예:
-   * EVERY_SECOND_SUNDAY
-   * EVERY_THIRD_SUNDAY
-   * MONTHLY_15TH
-   */
   @Column({
     type: 'varchar',
     length: 100,
@@ -150,11 +128,6 @@ export class BankEntity {
   })
   sortOrder!: number;
 
-  /**
-   * false이면 신규 계좌 등록 화면에서 선택할 수 없다.
-   *
-   * 현재 점검 중인지 여부는 별도로 점검 시간을 계산한다.
-   */
   @Column({
     type: 'boolean',
     name: 'is_active',

@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -6,6 +7,7 @@ import {
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
+  Unique,
   UpdateDateColumn,
 } from 'typeorm';
 
@@ -13,15 +15,30 @@ import { BankEntity } from '../../../banks/infrastructure/entities/bank.entity';
 import { UserBankAccountStatus } from '../../domain/enums/user-bank-account-status.enum';
 import { UserEntity } from './user.entity';
 
+/**
+ * user_bank_accounts — 계좌 이력형 저장.
+ *
+ * - 계좌번호를 UPDATE로 덮어쓰지 않고 변경 시 새 행 + replaces_bank_account_id
+ * - 가입 직후 status = PENDING_APPROVAL
+ * - account_number_encrypted: BYTEA (AES-GCM, `account-crypto.util`)
+ * - account_number_hash: 중복 검색용 HMAC (UNIQUE)
+ * - UNIQUE(id, user_id): 심사 테이블 복합 FK용
+ */
 @Entity({ name: 'user_bank_accounts' })
+@Unique('ux_user_bank_accounts_id_user_id', ['id', 'userId'])
 @Index('ux_user_bank_accounts_account_number_hash', ['accountNumberHash'], {
   unique: true,
 })
-@Index('ux_user_bank_accounts_active_user', ['userId'], {
-  unique: true,
-  where: `"status" = 'ACTIVE'`,
-})
 @Index('ix_user_bank_accounts_bank_code', ['bankCode'])
+@Index('ix_user_bank_accounts_user_id', ['userId'])
+@Check(
+  'ck_user_bank_accounts_active',
+  `"status" <> 'ACTIVE' OR ("reviewed_at" IS NOT NULL AND "reviewed_by_user_id" IS NOT NULL AND "activated_at" IS NOT NULL)`,
+)
+@Check(
+  'ck_user_bank_accounts_rejected',
+  `"status" <> 'REJECTED' OR ("reviewed_at" IS NOT NULL AND "rejection_reason" IS NOT NULL)`,
+)
 export class UserBankAccountEntity {
   @PrimaryGeneratedColumn('uuid', {
     name: 'id',
@@ -35,7 +52,7 @@ export class UserBankAccountEntity {
   userId!: string;
 
   @ManyToOne(() => UserEntity, (user) => user.bankAccounts, {
-    onDelete: 'CASCADE',
+    onDelete: 'RESTRICT',
   })
   @JoinColumn({
     name: 'user_id',
@@ -60,18 +77,18 @@ export class UserBankAccountEntity {
   bank!: BankEntity;
 
   /**
-   * AES-GCM 등으로 암호화한 실제 계좌번호.
-   * 암호화 키는 환경변수나 KMS에서 관리한다.
+   * AES-GCM 암호문 (BYTEA). 생성: encryptAccountNumber().
+   * 복호화 키: ACCOUNT_ENCRYPTION_KEY
    */
   @Column({
-    type: 'text',
+    type: 'bytea',
     name: 'account_number_encrypted',
   })
-  accountNumberEncrypted!: string;
+  accountNumberEncrypted!: Buffer;
 
   /**
-   * 중복 계좌 확인용 단방향 해시.
-   * HMAC-SHA256 권장.
+   * 중복 계좌 검색용 HMAC-SHA256 hex (64자).
+   * pepper: IDENTITY_PEPPER
    */
   @Column({
     type: 'char',
@@ -80,10 +97,6 @@ export class UserBankAccountEntity {
   })
   accountNumberHash!: string;
 
-  /**
-   * 사용자 및 어드민 화면 표시용.
-   * 예: 110-***-123456
-   */
   @Column({
     type: 'varchar',
     length: 50,
@@ -101,17 +114,95 @@ export class UserBankAccountEntity {
   @Column({
     type: 'enum',
     enum: UserBankAccountStatus,
-    enumName: 'user_bank_account_status',
+    enumName: 'bank_account_status',
     name: 'status',
-    default: UserBankAccountStatus.ACTIVE,
+    default: UserBankAccountStatus.PENDING_APPROVAL,
   })
   status!: UserBankAccountStatus;
 
   @Column({
-    type: 'timestamptz',
-    name: 'verified_at',
+    type: 'uuid',
+    name: 'replaces_bank_account_id',
+    nullable: true,
   })
-  verifiedAt!: Date;
+  replacesBankAccountId!: string | null;
+
+  @ManyToOne(() => UserBankAccountEntity, {
+    onDelete: 'RESTRICT',
+    nullable: true,
+  })
+  @JoinColumn({
+    name: 'replaces_bank_account_id',
+    referencedColumnName: 'id',
+  })
+  replacesBankAccount!: UserBankAccountEntity | null;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'requested_at',
+    default: () => 'CURRENT_TIMESTAMP',
+  })
+  requestedAt!: Date;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'reviewed_at',
+    nullable: true,
+  })
+  reviewedAt!: Date | null;
+
+  @Column({
+    type: 'uuid',
+    name: 'reviewed_by_user_id',
+    nullable: true,
+  })
+  reviewedByUserId!: string | null;
+
+  @ManyToOne(() => UserEntity, {
+    onDelete: 'SET NULL',
+    nullable: true,
+  })
+  @JoinColumn({
+    name: 'reviewed_by_user_id',
+    referencedColumnName: 'id',
+  })
+  reviewedByUser!: UserEntity | null;
+
+  @Column({
+    type: 'varchar',
+    length: 500,
+    name: 'rejection_reason',
+    nullable: true,
+  })
+  rejectionReason!: string | null;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'activated_at',
+    nullable: true,
+  })
+  activatedAt!: Date | null;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'suspended_at',
+    nullable: true,
+  })
+  suspendedAt!: Date | null;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'retired_at',
+    nullable: true,
+  })
+  retiredAt!: Date | null;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'closed_at',
+    nullable: true,
+  })
+  closedAt!: Date | null;
 
   @CreateDateColumn({
     type: 'timestamptz',

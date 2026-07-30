@@ -6,6 +6,11 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 
+/**
+ * Auth 도메인 예외 팩토리.
+ * Nest HTTP 예외 + { code, message } 본문.
+ * 프론트는 code로 분기한다 (예: PENDING_APPROVAL, LOGIN_ID_TAKEN).
+ */
 export class AuthDomainException {
   static invalidLoginId(): BadRequestException {
     return new BadRequestException({
@@ -31,7 +36,7 @@ export class AuthDomainException {
   static invalidRrn(): BadRequestException {
     return new BadRequestException({
       code: 'INVALID_RRN',
-      message: '주민등록번호 앞자리가 올바르지 않아요.',
+      message: '주민등록번호 형식이 올바르지 않아요.',
     });
   }
 
@@ -46,6 +51,13 @@ export class AuthDomainException {
     return new BadRequestException({
       code: 'CONSENT_REQUIRED',
       message: '필수 약관에 동의해 주세요.',
+    });
+  }
+
+  static duplicateConsent(): BadRequestException {
+    return new BadRequestException({
+      code: 'DUPLICATE_CONSENT',
+      message: '동일한 동의 항목이 중복됐어요.',
     });
   }
 
@@ -70,17 +82,31 @@ export class AuthDomainException {
     });
   }
 
-  static octomoInvalid(): UnauthorizedException {
-    return new UnauthorizedException({
-      code: 'OCTOMO_INVALID',
-      message: '본인인증을 확인할 수 없어요.',
+  static pendingApproval(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'PENDING_APPROVAL',
+      message: '가입 승인 대기 중이에요. 승인 후 로그인해 주세요.',
     });
   }
 
-  static octomoExpired(): ForbiddenException {
+  static accountSuspended(): ForbiddenException {
     return new ForbiddenException({
-      code: 'OCTOMO_EXPIRED',
-      message: '본인인증이 만료됐어요. 다시 인증해 주세요.',
+      code: 'ACCOUNT_SUSPENDED',
+      message: '이용이 정지된 계정이에요.',
+    });
+  }
+
+  static accountRejected(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'ACCOUNT_REJECTED',
+      message: '가입이 반려된 계정이에요.',
+    });
+  }
+
+  static accountWithdrawn(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'ACCOUNT_WITHDRAWN',
+      message: '탈퇴한 계정이에요.',
     });
   }
 

@@ -4,6 +4,14 @@ import { JwtService } from '@nestjs/jwt';
 
 import { AuthDomainException } from './exceptions/auth.exceptions';
 
+/**
+ * 가입 전 계좌 확인용 단기 JWT.
+ * typ='account_verify' — access/refresh와 구분.
+ * 만료: ACCOUNT_VERIFY_EXPIRES_SEC (기본 600초).
+ * secret: ACCOUNT_VERIFY_SECRET
+ *
+ * signup에서 bankCode/accountNumberHash/holderName/name 일치 검증에 사용.
+ */
 export type AccountVerifyPayload = {
   typ: 'account_verify';
   name: string;

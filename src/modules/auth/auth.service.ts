@@ -9,7 +9,6 @@ import {
   hashAccountNumber,
   maskAccountNumber,
 } from '../../common/utils/account-crypto.util';
-import { hashIdentityKey } from '../../common/utils/identity-key.util';
 import {
   hashSecret,
   hashTransactionPin,
@@ -20,7 +19,7 @@ import {
   generateRefreshToken,
   hashRefreshToken,
 } from '../../common/utils/refresh-token.util';
-import { parseRrnFront7 } from '../../common/utils/rrn.util';
+import { parseResidentRegistrationNumber } from '../users/utils/rrn.util';
 import { BanksService } from '../banks/banks.service';
 import { UserStatus } from '../users/domain/enums/user-status.enum';
 import { UserService } from '../users/user.service';
@@ -29,12 +28,15 @@ import { CheckLoginIdDto } from './dto/check-login-id.dto';
 import { CheckNicknameDto } from './dto/check-nickname.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { SignupDto } from './dto/signup.dto';
+import {
+  assertRequiredConsentsAgreed,
+  hasDuplicateConsentKeys,
+  SignupDto,
+} from './dto/signup';
 import { VerifyAccountDto } from './dto/verify-account.dto';
 import { AuthDomainException } from './exceptions/auth.exceptions';
 import { UserSessionStatus } from './domain/enums/user-session-status.enum';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
-import { OctomoService } from './octomo.service';
 
 const RESERVED_LOGIN_IDS = new Set([
   'admin',
@@ -50,7 +52,7 @@ export type AuthTokensResponse = {
   user: {
     id: string;
     loginId: string;
-    nickname: string;
+    nickname: string | null;
     phoneE164: string;
   };
   tokens: {
@@ -60,6 +62,23 @@ export type AuthTokensResponse = {
   };
 };
 
+export type SignupResponse = {
+  id: string;
+  loginId: string;
+  status: UserStatus;
+};
+
+/**
+ * 인증·가입 유스케이스.
+ *
+ * 가입 정책 (ERD v3):
+ * 1) POST /auth/accounts/verify → accountVerifyToken 발급 (위조 방지)
+ * 2) POST /auth/signup → PENDING 사용자 생성, 토큰 미발급
+ * 3) 관리자 승인 후 ACTIVE
+ * 4) POST /auth/login → ACTIVE만 허용, 세션+JWT 발급
+ *
+ * 관련: UserService, AccountVerifyTokenService, users/utils/rrn.util, account-crypto.util
+ */
 @Injectable()
 export class AuthService {
   constructor(
@@ -69,7 +88,6 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly banksService: BanksService,
     private readonly accountVerifyTokenService: AccountVerifyTokenService,
-    private readonly octomoService: OctomoService,
     @InjectRepository(UserSessionEntity)
     private readonly sessionRepository: Repository<UserSessionEntity>,
   ) {}
@@ -91,6 +109,11 @@ export class AuthService {
     return { available: !exists };
   }
 
+  /**
+   * 계좌 확인 토큰 발급.
+   * P0: 실계좌 API 미연동 — 입력 이름을 예금주로 신뢰하고 HMAC 해시로 토큰에 묶는다.
+   * signup 시 토큰 내용과 bankCode/account/holder/name이 일치해야 한다.
+   */
   async verifyAccount(dto: VerifyAccountDto): Promise<{
     verified: true;
     holderName: string;
@@ -111,7 +134,6 @@ export class AuthService {
 
     const holderName = dto.name.trim();
 
-    // P0: 실계좌 API 미연동 — 입력 이름을 예금주로 신뢰(토큰으로 signup 위조 방지)
     const pepper = this.configService.getOrThrow<string>('IDENTITY_PEPPER');
     const accountNumberHash = hashAccountNumber(accountNumber, pepper);
     const issued = await this.accountVerifyTokenService.issue({
@@ -131,12 +153,15 @@ export class AuthService {
     };
   }
 
-  async signup(dto: SignupDto): Promise<AuthTokensResponse> {
-    if (
-      !dto.consents.service ||
-      !dto.consents.privacy ||
-      !dto.consents.identity
-    ) {
+  /**
+   * 회원가입. 성공 시 { id, loginId, status: PENDING }. 토큰 없음.
+   * RRN → birthDate/genderCode 파생 후 UserService.createUserInTransaction 호출.
+   */
+  async signup(dto: SignupDto): Promise<SignupResponse> {
+    if (hasDuplicateConsentKeys(dto.consents.items)) {
+      throw AuthDomainException.duplicateConsent();
+    }
+    if (!assertRequiredConsentsAgreed(dto.consents.items)) {
       throw AuthDomainException.consentRequired();
     }
 
@@ -147,10 +172,19 @@ export class AuthService {
       throw AuthDomainException.invalidPhone();
     }
 
+    let residentRegistrationNumber: string;
     let birthDate: string;
-    let genderCode: ReturnType<typeof parseRrnFront7>['genderCode'];
+    let genderCode: ReturnType<
+      typeof parseResidentRegistrationNumber
+    >['genderCode'];
     try {
-      ({ birthDate, genderCode } = parseRrnFront7(dto.identity.rrnFront7));
+      ({
+        residentRegistrationNumber,
+        birthDate,
+        genderCode,
+      } = parseResidentRegistrationNumber(
+        dto.identity.residentRegistrationNumber,
+      ));
     } catch {
       throw AuthDomainException.invalidRrn();
     }
@@ -160,12 +194,9 @@ export class AuthService {
       throw AuthDomainException.invalidLoginId();
     }
 
-    const phoneDigits = dto.identity.phone.replace(/\D/g, '');
-    const octomoVerifiedAt = new Date(dto.octomo.verifiedAt);
-    await this.octomoService.assertMessageExists({
-      phoneDigits,
-      verifiedAt: octomoVerifiedAt,
-    });
+    const identityName = dto.identity.name.trim();
+    const accountHolderName = dto.bankAccount.accountHolderName.trim();
+    const nickname = dto.credentials.nickname?.trim() || null;
 
     const identityPepper =
       this.configService.getOrThrow<string>('IDENTITY_PEPPER');
@@ -179,13 +210,13 @@ export class AuthService {
     if (
       verifyPayload.bankCode !== dto.bankAccount.bankCode ||
       verifyPayload.accountNumberHash !== accountNumberHash ||
-      verifyPayload.holderName !== dto.bankAccount.accountHolderName ||
-      verifyPayload.name !== dto.identity.name.trim()
+      verifyPayload.holderName !== accountHolderName ||
+      verifyPayload.name !== identityName
     ) {
       throw AuthDomainException.accountVerifyExpired();
     }
 
-    if (dto.bankAccount.accountHolderName.trim() !== dto.identity.name.trim()) {
+    if (accountHolderName !== identityName) {
       throw AuthDomainException.nameMismatch();
     }
 
@@ -203,35 +234,19 @@ export class AuthService {
       'TRANSACTION_PIN_PEPPER',
     );
 
-    const [
-      passwordHash,
-      transactionPinHash,
-      accountNumberEncrypted,
-      identityKeyHash,
-    ] = await Promise.all([
+    const [passwordHash, pinHash, accountNumberEncrypted] = await Promise.all([
       hashSecret(dto.credentials.loginPassword),
-      hashTransactionPin(dto.security.transactionPin, pinPepper),
+      hashTransactionPin(dto.security.pin, pinPepper),
       Promise.resolve(encryptAccountNumber(accountNumber, encryptionKey)),
-      Promise.resolve(
-        hashIdentityKey({
-          pepper: identityPepper,
-          name: dto.identity.name.trim(),
-          birthDate,
-          genderCode,
-        }),
-      ),
     ]);
 
-    const refreshToken = generateRefreshToken();
-    const refreshTokenHash = hashRefreshToken(refreshToken);
-    const accessExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'),
-    );
-    const refreshExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRES_SEC'),
-    );
-    const refreshExpiresAt = new Date(Date.now() + refreshExpiresSec * 1000);
-    const now = new Date();
+    const agreedAt = new Date(dto.consents.agreedAt);
+    const consents = dto.consents.items.map((item) => ({
+      consentType: item.consentType,
+      documentVersion: item.documentVersion,
+      isAgreed: item.isAgreed,
+      agreedAt: item.isAgreed ? agreedAt : null,
+    }));
 
     let userId: string;
     try {
@@ -240,46 +255,20 @@ export class AuthService {
           loginId,
           passwordHash,
           phoneE164,
-          name: dto.identity.name.trim(),
+          name: identityName,
+          residentRegistrationNumber,
           birthDate,
           genderCode,
           mobileCarrier: dto.identity.mobileCarrier,
-          nickname: dto.credentials.nickname.trim(),
-          identityKeyHash,
-          octomoRequestId: dto.octomo.requestId,
-          phoneVerifiedAt: octomoVerifiedAt,
-          identityVerifiedAt: octomoVerifiedAt,
-          transactionPinHash,
+          nickname,
+          pinHash,
           bankCode: dto.bankAccount.bankCode,
           accountNumberEncrypted,
           accountNumberHash,
           accountNumberMasked: maskAccountNumber(accountNumber),
-          holderName: dto.bankAccount.accountHolderName.trim(),
-          bankAccountVerifiedAt: now,
-          consents: {
-            service: dto.consents.service,
-            privacy: dto.consents.privacy,
-            identity: dto.consents.identity,
-            marketing: dto.consents.marketing,
-            agreedAt: new Date(dto.consents.agreedAt),
-          },
+          holderName: accountHolderName,
+          consents,
         });
-
-        const sessionRepository = manager.getRepository(UserSessionEntity);
-        const session = sessionRepository.create({
-          userId: user.id,
-          refreshTokenHash,
-          deviceId: null,
-          deviceName: null,
-          userAgent: null,
-          ipAddress: null,
-          status: UserSessionStatus.ACTIVE,
-          expiresAt: refreshExpiresAt,
-          lastUsedAt: now,
-          revokedAt: null,
-        });
-        await sessionRepository.save(session);
-
         return user.id;
       });
     } catch (error) {
@@ -291,40 +280,24 @@ export class AuthService {
     if (!user) {
       throw AuthDomainException.invalidCredentials();
     }
-    const nickname = await this.userService.getNicknameByUserId(userId);
-    const session = await this.sessionRepository.findOne({
-      where: { refreshTokenHash, status: UserSessionStatus.ACTIVE },
-    });
-    if (!session || !nickname) {
-      throw AuthDomainException.invalidCredentials();
-    }
-
-    const accessToken = await this.signAccessToken(
-      user.id,
-      session.id,
-      await this.userService.getPrimaryRole(user.id),
-    );
 
     return {
-      user: {
-        id: user.id,
-        loginId: user.loginId,
-        nickname,
-        phoneE164: user.phoneE164,
-      },
-      tokens: {
-        accessToken,
-        refreshToken,
-        expiresInSec: accessExpiresSec,
-      },
+      id: user.id,
+      loginId: user.loginId,
+      status: user.status,
     };
   }
 
+  /**
+   * 로그인. ACTIVE만 통과. PENDING/SUSPENDED/REJECTED/WITHDRAWN은 상태별 예외.
+   */
   async login(dto: LoginDto): Promise<AuthTokensResponse> {
     const user = await this.userService.findByLoginId(dto.loginId);
-    if (!user || user.status !== UserStatus.ACTIVE) {
+    if (!user) {
       throw AuthDomainException.invalidCredentials();
     }
+
+    this.assertLoginAllowed(user.status);
 
     const matched = await verifySecret(dto.password, user.passwordHash);
     if (!matched) {
@@ -332,10 +305,6 @@ export class AuthService {
     }
 
     const nickname = await this.userService.getNicknameByUserId(user.id);
-    if (!nickname) {
-      throw AuthDomainException.invalidCredentials();
-    }
-
     const role = await this.userService.getPrimaryRole(user.id);
     const tokens = await this.createSessionTokens(user.id, role);
     await this.userService.touchLastLogin(user.id);
@@ -366,6 +335,11 @@ export class AuthService {
       session.status !== UserSessionStatus.ACTIVE ||
       session.expiresAt.getTime() < Date.now()
     ) {
+      throw AuthDomainException.invalidRefreshToken();
+    }
+
+    const user = await this.userService.findById(session.userId);
+    if (!user || user.status !== UserStatus.ACTIVE) {
       throw AuthDomainException.invalidRefreshToken();
     }
 
@@ -402,8 +376,26 @@ export class AuthService {
       {
         status: UserSessionStatus.REVOKED,
         revokedAt: new Date(),
+        revokeReason: 'LOGOUT',
       },
     );
+  }
+
+  private assertLoginAllowed(status: UserStatus): void {
+    switch (status) {
+      case UserStatus.ACTIVE:
+        return;
+      case UserStatus.PENDING:
+        throw AuthDomainException.pendingApproval();
+      case UserStatus.SUSPENDED:
+        throw AuthDomainException.accountSuspended();
+      case UserStatus.REJECTED:
+        throw AuthDomainException.accountRejected();
+      case UserStatus.WITHDRAWN:
+        throw AuthDomainException.accountWithdrawn();
+      default:
+        throw AuthDomainException.invalidCredentials();
+    }
   }
 
   private async createSessionTokens(
@@ -434,6 +426,7 @@ export class AuthService {
       expiresAt: new Date(Date.now() + refreshExpiresSec * 1000),
       lastUsedAt: new Date(),
       revokedAt: null,
+      revokeReason: null,
     });
     await this.sessionRepository.save(session);
 
@@ -471,7 +464,10 @@ export class AuthService {
     if (!(error instanceof QueryFailedError)) {
       return;
     }
-    const driverError = error.driverError as { code?: string; constraint?: string };
+    const driverError = error.driverError as {
+      code?: string;
+      constraint?: string;
+    };
     if (driverError.code !== '23505') {
       return;
     }
@@ -485,11 +481,7 @@ export class AuthService {
     if (constraint.includes('phone_e164')) {
       throw AuthDomainException.phoneExists();
     }
-    if (
-      constraint.includes('identity_key_hash') ||
-      constraint.includes('octomo_request_id') ||
-      constraint.includes('request_id')
-    ) {
+    if (constraint.includes('resident_registration_number')) {
       throw AuthDomainException.identityExists();
     }
     if (constraint.includes('account_number_hash')) {

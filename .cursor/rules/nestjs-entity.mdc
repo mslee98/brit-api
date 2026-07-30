@@ -45,24 +45,30 @@ Soft Delete(`deletedAt`)는 복구·감사 필요가 있을 때만. 습관적 �
 
 ## 보안
 
-비밀번호·PIN·주민번호·계좌·복구토큰 평문 저장 금지. `passwordHash` 등 해시. Entity를 API 응답으로 직접 반환하지 않음. 응답 DTO에 hash/토큰/전체 계좌 포함 금지.
+비밀번호·PIN·계좌번호·복구토큰 평문 저장 금지. `passwordHash`/`pinHash` 등 해시·암호문.
+주민등록번호는 ERD v3 정책상 `user_profiles.resident_registration_number`에 **평문** 저장한다(의도적). 단 API 응답·로그·감사 로그에 전체 주민번호 노출 금지.
+Entity를 API 응답으로 직접 반환하지 않음. 응답 DTO에 hash/토큰/전체 계좌/전체 주민번호 포함 금지.
 
-## P0 사용자 스키마 (승인됨)
+## ERD v3 사용자 스키마 (승인됨)
 
-로그인 계정과 프로필·역할을 분리한다.
+로그인 계정과 프로필·역할·계좌·지갑을 분리한다. 가입은 외부 본인인증 없이 제출 후 관리자 승인.
 
 ```text
-users              → 로그인 계정·상태 (loginId, passwordHash, phoneE164, status)
-user_profiles      → 본인정보·OCTOMO·거래 PIN (users 1:1)
-user_roles         → 역할 매핑 (users 1:N, 복합 PK)
-user_bank_accounts → 인증 계좌 (users 1:N, ACTIVE 부분유니크)
-user_sessions      → Refresh Token·기기 (auth 모듈 소유)
-banks              → 은행 마스터
+users                     → 로그인·가입 상태 (PENDING→ACTIVE, 승인/반려 필드)
+user_profiles             → 실명·주민번호 평문·통신사·거래 PIN (users 1:1)
+user_roles                → USER/ADMIN/SYS_ADMIN 부여·회수 이력 (UUID PK)
+user_consents             → 동의 종류·문서버전별 이력
+user_sessions             → Refresh Token·기기 (auth 모듈, session_status)
+banks                     → 은행 마스터
+user_bank_accounts        → 계좌 이력 (PENDING_APPROVAL 등)
+user_approval_reviews     → 가입 심사 불변 이력
+user_bank_account_reviews → 계좌 조치 이력
+user_coin_wallets         → 사용자 Coin 잔액 집계 (users 1:1)
 ```
 
 추가 분리는 1:N·별도 생명주기·접근권한 상이·대용량·조회패턴 완전 상이·법적 격리일 때만.
 
-필수 인덱스 예: `login_id`, `phone_e164`, `nickname`, `identity_key_hash` unique.
+필수 인덱스 예: `login_id`, `phone_e164`, `nickname`, `resident_registration_number` unique.
 
 ## 컬럼 추가 전
 

@@ -9,6 +9,7 @@ import {
 } from './dto/bank-response.dto';
 import { BankEntity } from './infrastructure/entities/bank.entity';
 
+/** 은행 마스터 조회. 가입·계좌 등록 시 bank_code 유효성 확인에 사용. */
 @Injectable()
 export class BanksService {
   constructor(
