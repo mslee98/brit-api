@@ -1,9 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthGuardsModule } from '../auth/auth-guards.module';
+import { AuthModule } from '../auth/auth.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminUserApprovalsController } from './admin-user-approvals.controller';
+import { AdminUserController } from './admin-user.controller';
 import { UserApprovalReviewEntity } from './infrastructure/entities/user-approval-review.entity';
 import { UserBankAccountReviewEntity } from './infrastructure/entities/user-bank-account-review.entity';
 import { UserBankAccountEntity } from './infrastructure/entities/user-bank-account.entity';
@@ -33,8 +35,9 @@ import { UserService } from './user.service';
     ]),
     NotificationsModule,
     AuthGuardsModule,
+    forwardRef(() => AuthModule),
   ],
-  controllers: [AdminUserApprovalsController],
+  controllers: [AdminUserApprovalsController, AdminUserController],
   providers: [UserService],
   exports: [TypeOrmModule, UserService],
 })

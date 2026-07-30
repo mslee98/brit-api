@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
 
 import {
   encryptAccountNumber,
@@ -84,6 +84,7 @@ export class AuthService {
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly jwtService: JwtService,
+    @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
     private readonly banksService: BanksService,
     private readonly notificationService: NotificationService,
@@ -336,6 +337,25 @@ export class AuthService {
         status: UserSessionStatus.REVOKED,
         revokedAt: new Date(),
         revokeReason: 'LOGOUT',
+      },
+    );
+  }
+
+  /**
+   * 대상 사용자의 ACTIVE 세션을 모두 REVOKED로 바꾼다.
+   * 정지·탈퇴 트랜잭션에서 EntityManager와 함께 호출한다.
+   */
+  async revokeAllActiveSessionsInTransaction(
+    manager: EntityManager,
+    userId: string,
+    revokeReason: string,
+  ): Promise<void> {
+    await manager.getRepository(UserSessionEntity).update(
+      { userId, status: UserSessionStatus.ACTIVE },
+      {
+        status: UserSessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revokeReason,
       },
     );
   }

@@ -44,8 +44,12 @@ import { UserRoleEntity } from './user-role.entity';
   `"status" <> 'REJECTED' OR ("rejected_at" IS NOT NULL AND "rejection_reason" IS NOT NULL)`,
 )
 @Check(
-  'ck_users_withdrawn_requires_at',
-  `"status" <> 'WITHDRAWN' OR "withdrawn_at" IS NOT NULL`,
+  'ck_users_suspended_requires_fields',
+  `"status" <> 'SUSPENDED' OR ("suspended_at" IS NOT NULL AND "suspension_reason" IS NOT NULL)`,
+)
+@Check(
+  'ck_users_withdrawn_requires_fields',
+  `"status" <> 'WITHDRAWN' OR ("withdrawn_at" IS NOT NULL AND "withdrawal_reason" IS NOT NULL)`,
 )
 export class UserEntity {
   /** 전 도메인에서 참조하는 사용자 UUID */
@@ -153,6 +157,41 @@ export class UserEntity {
   })
   passwordChangedAt!: Date;
 
+  /** 이용 정지 시각 (SUSPENDED일 때 필수) */
+  @Column({
+    type: 'timestamptz',
+    name: 'suspended_at',
+    nullable: true,
+  })
+  suspendedAt!: Date | null;
+
+  /** 이용 정지 사유 (SUSPENDED일 때 필수) */
+  @Column({
+    type: 'varchar',
+    length: 500,
+    name: 'suspension_reason',
+    nullable: true,
+  })
+  suspensionReason!: string | null;
+
+  /** 정지를 수행한 관리자 users.id */
+  @Column({
+    type: 'uuid',
+    name: 'suspended_by_user_id',
+    nullable: true,
+  })
+  suspendedByUserId!: string | null;
+
+  @ManyToOne(() => UserEntity, {
+    onDelete: 'SET NULL',
+    nullable: true,
+  })
+  @JoinColumn({
+    name: 'suspended_by_user_id',
+    referencedColumnName: 'id',
+  })
+  suspendedByUser!: UserEntity | null;
+
   /** 탈퇴 처리 시각 (WITHDRAWN일 때 필수) */
   @Column({
     type: 'timestamptz',
@@ -160,6 +199,15 @@ export class UserEntity {
     nullable: true,
   })
   withdrawnAt!: Date | null;
+
+  /** 관리자 강제 탈퇴 사유 (WITHDRAWN일 때 필수) */
+  @Column({
+    type: 'varchar',
+    length: 500,
+    name: 'withdrawal_reason',
+    nullable: true,
+  })
+  withdrawalReason!: string | null;
 
   @CreateDateColumn({
     type: 'timestamptz',

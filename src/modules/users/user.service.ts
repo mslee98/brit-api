@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
@@ -6,6 +6,7 @@ import {
   buildPaginationMeta,
   PaginationMeta,
 } from '../../common/dto/pagination-query.dto';
+import { AuthService } from '../auth/auth.service';
 import { NotificationService } from '../notifications/notification.service';
 import { ApprovalDecision } from './domain/enums/approval-decision.enum';
 import { BankAccountReviewDecision } from './domain/enums/bank-account-review-decision.enum';
@@ -18,13 +19,19 @@ import { UserRole } from './domain/enums/user-role.enum';
 import { UserStatus } from './domain/enums/user-status.enum';
 import { CoinWalletStatus } from './domain/enums/coin-wallet-status.enum';
 import {
+  AdminUserDetailDto,
+  AdminUserListItemDto,
+} from './dto/admin-user-response.dto';
+import {
   ApproveUserRegistrationDto,
   RejectUserRegistrationDto,
 } from './dto/approve-user-registration.dto';
+import { SearchAdminUsersDto } from './dto/search-admin-users.dto';
 import {
   UserApprovalDetailDto,
   UserApprovalListItemDto,
 } from './dto/user-approval-response.dto';
+import { UserAdminDomainException } from './exceptions/user-admin.exceptions';
 import { UserApprovalDomainException } from './exceptions/user-approval.exceptions';
 import { UserApprovalReviewEntity } from './infrastructure/entities/user-approval-review.entity';
 import { UserBankAccountReviewEntity } from './infrastructure/entities/user-bank-account-review.entity';
@@ -77,6 +84,7 @@ export type CreateUserInTransactionInput = {
  * 주요 진입점:
  * - createUserInTransaction: 가입 시 users+profile+role+bank+consents+wallet
  * - approveRegistration / rejectRegistration: 관리자 심사
+ * - searchUsers / suspendUser / unsuspendUser / withdrawUser: 관리자 운영
  * - getPrimaryRole: JWT role용 ACTIVE 역할 조회
  */
 @Injectable()
@@ -84,6 +92,8 @@ export class UserService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly notificationService: NotificationService,
+    @Inject(forwardRef(() => AuthService))
+    private readonly authService: AuthService,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(UserProfileEntity)
@@ -523,8 +533,218 @@ export class UserService {
     });
   }
 
+  async searchUsers(
+    query: SearchAdminUsersDto,
+  ): Promise<{ items: AdminUserListItemDto[]; pagination: PaginationMeta }> {
+    const page = query.page;
+    const size = query.size;
+    const qb = this.userRepository
+      .createQueryBuilder('user')
+      .innerJoinAndSelect('user.profile', 'profile')
+      .orderBy('user.registrationSubmittedAt', 'DESC')
+      .skip((page - 1) * size)
+      .take(size);
+
+    if (query.status) {
+      qb.andWhere('user.status = :status', { status: query.status });
+    }
+
+    const keyword = query.q?.trim();
+    if (keyword) {
+      const like = `%${keyword}%`;
+      qb.andWhere(
+        `(user.loginId ILIKE :like
+          OR user.phoneE164 ILIKE :like
+          OR profile.name ILIKE :like
+          OR profile.nickname ILIKE :like)`,
+        { like },
+      );
+    }
+
+    const [users, totalItems] = await qb.getManyAndCount();
+
+    return {
+      items: users.map((user) => this.toAdminListItem(user, user.profile)),
+      pagination: buildPaginationMeta(page, size, totalItems),
+    };
+  }
+
+  async getAdminUserDetail(userId: string): Promise<AdminUserDetailDto> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      relations: { profile: true },
+    });
+    if (!user?.profile) {
+      throw UserAdminDomainException.notFound();
+    }
+    return this.toAdminDetail(user, user.profile);
+  }
+
+  async suspendUser(
+    adminUserId: string,
+    userId: string,
+    reason: string,
+  ): Promise<{ id: string; status: UserStatus }> {
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) {
+      throw UserAdminDomainException.reasonRequired();
+    }
+    if (adminUserId === userId) {
+      throw UserAdminDomainException.cannotModifySelf();
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const userRepository = manager.getRepository(UserEntity);
+      const user = await userRepository.findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw UserAdminDomainException.notFound();
+      }
+      if (user.status !== UserStatus.ACTIVE) {
+        throw UserAdminDomainException.invalidStatusTransition();
+      }
+
+      const now = new Date();
+      user.status = UserStatus.SUSPENDED;
+      user.suspendedAt = now;
+      user.suspensionReason = trimmedReason;
+      user.suspendedByUserId = adminUserId;
+      await userRepository.save(user);
+
+      await this.authService.revokeAllActiveSessionsInTransaction(
+        manager,
+        userId,
+        'USER_SUSPENDED',
+      );
+
+      return { id: user.id, status: user.status };
+    });
+  }
+
+  async unsuspendUser(
+    adminUserId: string,
+    userId: string,
+  ): Promise<void> {
+    if (adminUserId === userId) {
+      throw UserAdminDomainException.cannotModifySelf();
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      const userRepository = manager.getRepository(UserEntity);
+      const user = await userRepository.findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw UserAdminDomainException.notFound();
+      }
+      if (user.status !== UserStatus.SUSPENDED) {
+        throw UserAdminDomainException.invalidStatusTransition();
+      }
+      if (!user.approvedAt || !user.approvedByUserId) {
+        throw UserAdminDomainException.invalidStatusTransition();
+      }
+
+      user.status = UserStatus.ACTIVE;
+      user.suspendedAt = null;
+      user.suspensionReason = null;
+      user.suspendedByUserId = null;
+      await userRepository.save(user);
+    });
+  }
+
+  async withdrawUser(
+    adminUserId: string,
+    userId: string,
+    reason: string,
+  ): Promise<{ id: string; status: UserStatus }> {
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) {
+      throw UserAdminDomainException.reasonRequired();
+    }
+    if (adminUserId === userId) {
+      throw UserAdminDomainException.cannotModifySelf();
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const userRepository = manager.getRepository(UserEntity);
+      const user = await userRepository.findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw UserAdminDomainException.notFound();
+      }
+      if (
+        user.status !== UserStatus.ACTIVE &&
+        user.status !== UserStatus.SUSPENDED
+      ) {
+        throw UserAdminDomainException.invalidStatusTransition();
+      }
+
+      const now = new Date();
+      user.status = UserStatus.WITHDRAWN;
+      user.withdrawnAt = now;
+      user.withdrawalReason = trimmedReason;
+      user.suspendedAt = null;
+      user.suspensionReason = null;
+      user.suspendedByUserId = null;
+      await userRepository.save(user);
+
+      await this.authService.revokeAllActiveSessionsInTransaction(
+        manager,
+        userId,
+        'USER_WITHDRAWN',
+      );
+
+      return { id: user.id, status: user.status };
+    });
+  }
+
   async touchLastLogin(userId: string): Promise<void> {
     await this.userRepository.update(userId, { lastLoginAt: new Date() });
+  }
+
+  private toAdminListItem(
+    user: UserEntity,
+    profile: UserProfileEntity,
+  ): AdminUserListItemDto {
+    return {
+      id: user.id,
+      loginId: user.loginId,
+      phoneE164: user.phoneE164,
+      status: user.status,
+      registrationSubmittedAt: user.registrationSubmittedAt,
+      lastLoginAt: user.lastLoginAt,
+      name: profile.name,
+      nickname: profile.nickname,
+    };
+  }
+
+  private toAdminDetail(
+    user: UserEntity,
+    profile: UserProfileEntity,
+  ): AdminUserDetailDto {
+    return {
+      ...this.toAdminListItem(user, profile),
+      residentRegistrationNumberMasked: maskResidentRegistrationNumber(
+        profile.residentRegistrationNumber,
+      ),
+      birthDate: profile.birthDate,
+      genderCode: profile.genderCode,
+      mobileCarrier: profile.mobileCarrier,
+      approvedAt: user.approvedAt,
+      approvedByUserId: user.approvedByUserId,
+      rejectedAt: user.rejectedAt,
+      rejectionReason: user.rejectionReason,
+      suspendedAt: user.suspendedAt,
+      suspensionReason: user.suspensionReason,
+      suspendedByUserId: user.suspendedByUserId,
+      withdrawnAt: user.withdrawnAt,
+      withdrawalReason: user.withdrawalReason,
+    };
   }
 
   private toListItem(
