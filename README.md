@@ -22,13 +22,11 @@ npm run start:dev
 
 ## NT 연결
 
-`NT/.env` (또는 `.env.local`):
+로컬 Vite가 `/v1`·`/assets`를 이 서버로 프록시합니다. 프론트는 same-origin 상대경로를 쓰고, `VITE_USE_MOCK=true`일 때만 mock입니다.
 
-```env
-VITE_API_BASE_URL=http://localhost:3000
-```
+## P0 구현 메모
 
-프론트 `auth.api`는 `VITE_API_BASE_URL`이 있으면 HTTP adapter를 우선 사용합니다.
+단계별 API·예외·패턴·주의점: [`docs/p0/README.md`](docs/p0/README.md).
 
 ## 다음 작업
 

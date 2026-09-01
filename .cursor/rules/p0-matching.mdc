@@ -1,0 +1,13 @@
+# Matching
+
+작업 전 `docs/p0/p0-5-matching.md`를 읽는다.  
+**Apply→Accept(P0-5b) 구현 중이면** `docs/p0/p0-5b-m1-m4-plan.md`를 우선하고, 정책은 front `trade-seller-accept-flow.md`를 따른다.
+
+- Browse+Select: `POST /buy-orders`는 MATCHING만. Trade는 `POST .../match` (P0-5b 완료 전 병행 가능).
+- Candidate는 Projection. Exact/Near 정렬·필터는 Backend.
+- Near = 금액 변경형 (Trade 금액 = sell remaining 전액).
+- Sell 잠금: 사용자 선택 시 `FOR UPDATE` (SKIP LOCKED 없음).
+- Worker: MATCHING TTL → EXPIRED만. 자동 체결 금지. (`REQUEST_PENDING`은 Buy TTL로 죽이지 않음 — M4)
+- `OrdersModule` import 금지(순환). Buy/Sell 엔티티는 `TypeOrmModule.forFeature`로 직접 등록.
+- Trade는 `WAITING_BUYER_PAYMENT`. 매칭 시 wallet consume 하지 않는다 (P0-6).
+- P0-5b: Apply에서만 remaining↓ reserved↑. Accept는 재차감 없음.

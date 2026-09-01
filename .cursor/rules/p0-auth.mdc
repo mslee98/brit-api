@@ -1,0 +1,15 @@
+---
+description: P0-1/P0-2 Auth·가입심사. 로그인 허용 상태와 register 계약을 문서와 맞춘다.
+globs: src/modules/auth/**/*.ts,src/modules/users/**/*.ts,src/modules/banks/**/*.ts,src/modules/notifications/**/*.ts
+alwaysApply: false
+---
+
+# Auth / 가입심사
+
+작업 전 `docs/p0/p0-1-auth.md`, `docs/p0/p0-2-registration.md`를 읽는다.
+
+- 가입: `POST /v1/auth/register` (레거시 `/auth/signup` 없음). **토큰 미발급**.
+- 로그인 허용: `ACTIVE | PENDING | REJECTED`. `SUSPENDED`/`WITHDRAWN`만 차단. enum 주석의 “PENDING 로그인 불가”를 따르지 않는다.
+- JWT: `sub`, `sid`, `role`, `status`, `tokenType`. Guard는 `user_sessions` ACTIVE·미만료를 DB에서 재검증.
+- P2P: `UserService.assertP2pEligibleInTransaction` (ACTIVE 유저 + ACTIVE 계좌).
+- 예외: `AuthDomainException` / `UserApprovalDomainException` static factory. `PENDING_APPROVAL`은 로그인에 쓰지 않는다.

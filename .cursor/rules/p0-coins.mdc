@@ -1,0 +1,15 @@
+---
+description: P0-3 Coins. Lot 불변식과 lock/consume 구분을 지킨다.
+globs: src/modules/coins/**/*.ts
+alwaysApply: false
+---
+
+# Coins
+
+작업 전 `docs/p0/p0-3-coins.md`를 읽는다. 금액은 bigint 문자열, `coin-amount.util.ts`만 사용.
+
+- 불변식: `lot.original = remaining + locked + consumed`. wallet은 lot 합과 맞춘다.
+- Sell 주문 lock: `lockSellableInTransaction` (remaining→locked).
+- P2P 이전: `consumeLockedSellableInTransaction` (locked→consumed, **lockedSellable만** 감소). `debitSellable`로 판매 완료 처리 금지.
+- P2P 수취 Lot: `is_sellable=true`, `sourceType=P2P_PURCHASE`. Brit 구매 Lot은 보통 nonSellable.
+- sellable credit은 `SYS_ADMIN`만. 완료된 ledger 행을 UPDATE/DELETE로 고치지 않는다.

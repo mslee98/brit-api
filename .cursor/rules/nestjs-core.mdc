@@ -8,8 +8,8 @@ alwaysApply: true
 
 ## 프로젝트 목적
 
-NestJS API 서버. 현재 범위: 사용자/관리자 API, 인증·인가, 사용자 상태, 관리자 권한, 사용자 조회·관리.
-향후 거래·업체·정산·분쟁으로 확장 가능하되, **현재 필요 기능만** 단순 구현한다.
+NestJS API 서버. P0 범위: Auth·가입심사, Coins, Buy/Sell, Matching, Trade 진행.
+도메인 메모는 `docs/p0/`를 따른다. **현재 필요 기능만** 단순 구현한다.
 
 ## 최우선 원칙
 
@@ -52,8 +52,12 @@ src/
 └─ modules/
    ├─ auth/
    ├─ users/
+   ├─ coins/
    ├─ banks/
-   └─ admins/
+   ├─ notifications/
+   ├─ orders/
+   ├─ matching/
+   └─ trades/
 ```
 
 도메인 모듈 예 (`users` / `auth`):
@@ -87,6 +91,7 @@ modules/auth/dto/
 - 관리자 사용자 API는 `AdminUserController` + `UserService` (별도 AdminUserService/Repository 금지).
 - `AdminsModule`: 관리자 계정·역할·권한·로그인 정책·감사 로그.
 - **다른 모듈 Repository 직접 주입 금지**. Service를 통해서만 접근.
+- **예외**: Matching·Trades는 Orders 순환을 피하려고 Buy/Sell 엔티티를 `TypeOrmModule.forFeature`로 직접 쓴다. 그 외 도메인에 확대하지 않는다.
 
 ```ts
 // ❌ AdminService → UserEntity Repository 직접 주입

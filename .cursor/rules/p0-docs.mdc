@@ -1,0 +1,24 @@
+---
+description: P0 구현 메모를 코딩 전에 읽고 따른다. 추측보다 문서·기존 코드를 우선한다.
+alwaysApply: true
+---
+
+# P0 구현 메모
+
+`docs/p0/`는 스펙 초안이 아니라 **현재 구현 기준** 메모다. brit-api를 추가·수정하기 전에 해당 파일을 **Read로 연다**. 문서에 없는 계층(use-case, StateService, Repository 래퍼)을 만들지 않는다.
+
+| 작업 | 문서 |
+|---|---|
+| 공통 패턴·예외·lock | `docs/p0/README.md` |
+| Auth / JWT / 세션 | `docs/p0/p0-1-auth.md` |
+| 가입·심사 | `docs/p0/p0-2-registration.md` |
+| Wallet / Lot / Ledger | `docs/p0/p0-3-coins.md` |
+| Buy/Sell 주문 | `docs/p0/p0-4-orders.md` |
+| 매칭 (현재) | `docs/p0/p0-5-matching.md` |
+| 판매자 수락 (M0 요약) | `docs/p0/p0-5b-seller-accept.md` |
+| **P0-5b M1~M4 구현 계획** | `docs/p0/p0-5b-m1-m4-plan.md` — Apply→Accept 백엔드 뼈대. 구현 전·중에는 이 문서를 따른다 |
+| Trade 진행 | `docs/p0/p0-6-trade.md` |
+| 관리자 기반 | `docs/p0/p0-admin-foundation.md` |
+
+문서와 코드가 다르면 **코드를 따르고** 불일치를 표시한다.  
+P0-5b(Apply/Accept) 작업 시: 정책은 front `trade-seller-accept-flow.md`, **TX·순서·범위는 `p0-5b-m1-m4-plan.md`**. 다음 예정 중 하나는 P0-7 분쟁 Workbench다.

@@ -1,0 +1,17 @@
+---
+description: P0-4 Buy/Sell 주문. Idempotency-Key와 Sell 전액 lock을 지킨다.
+globs: src/modules/orders/**/*.ts
+alwaysApply: false
+---
+
+# Orders
+
+작업 전 `docs/p0/p0-4-orders.md`를 읽는다.
+
+- 생성 `POST /v1/buy-orders`·`/sell-orders`에 `Idempotency-Key` 필수. Trade API에는 쓰지 않는다.
+- Sell: 생성 시 sellable 전액 lock. Buy: Coin lock 없음, `MATCHING` 세션만 생성 (자동 Trade 없음).
+- 판매자 선택·Trade는 `POST /buy-orders/:id/match` (P0-5).
+- 매칭된 Buy는 주문 cancel 불가 (`ORDER_ALREADY_MATCHED`) → Trade API.
+- Sell 취소는 remaining만 unlock. reserved(진행 Trade)는 유지.
+- Sell `remaining=0` 취소는 `original = remaining+reserved+completed` CHECK와 충돌할 수 있다. 스키마를 함부로 맞추지 말고 문서 주의점을 본다.
+- 자기매칭 금지. 테스트는 Buyer ≠ Seller.

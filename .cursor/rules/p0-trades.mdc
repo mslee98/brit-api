@@ -1,0 +1,16 @@
+---
+description: P0-6 Trade 진행. 확인 TX와 Coin 이전 TX를 분리하고 상태 전이를 지킨다.
+globs: src/modules/trades/**/*.ts
+alwaysApply: false
+---
+
+# Trade
+
+작업 전 `docs/p0/p0-6-trade.md`를 읽는다.
+
+- 상태 전이는 허용 집합만. `PAYMENT_TIMEOUT`은 취소가 아니다. Coin은 reserved 유지.
+- 입금 후 단측 cancel 금지 (`TRADE_CANNOT_CANCEL_AFTER_PAYMENT`). 쌍방취소는 `trade_events` 4단계.
+- confirm = TX A(`COIN_TRANSFERRING`) + TX B(원장 이전). TX B 실패 시 200 + Worker 재처리. confirm 200이 `COMPLETED`를 보장하지 않는다.
+- 같은 버튼 재클릭은 409가 아니라 `alreadyReported` / `alreadyConfirmed`.
+- 완료 거래를 API로 `CANCELLED`로 되돌리지 않는다. `DISPUTED` 처리는 P0-7.
+- Matching과 같이 OrdersModule import 금지. 인앱 알림 없음.

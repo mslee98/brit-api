@@ -63,7 +63,11 @@ banks                     → 은행 마스터
 user_bank_accounts        → 계좌 이력 (PENDING_APPROVAL 등)
 user_approval_reviews     → 가입 심사 불변 이력
 user_bank_account_reviews → 계좌 조치 이력
-user_coin_wallets         → 사용자 Coin 잔액 집계 (users 1:1)
+user_coin_wallets         → 사용자 Coin 잔액 집계 (users 1:1, CoinsModule)
+user_coin_lots            → Coin 출처·잔량 (CoinsModule)
+coin_ledger_entries       → 사용자 Coin 불변 원장 (CoinsModule)
+coin_purchases            → Brit Coin 구매 (CoinsModule)
+audit_logs                → 관리자 민감 운영 로그 (AdminsModule)
 notification_events       → 알림 대상 업무 사건 (가입 요청 등)
 notification_recipients   → 수신자별 읽음·보관
 ```

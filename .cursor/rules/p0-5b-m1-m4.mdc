@@ -1,0 +1,26 @@
+---
+description: P0-5b 판매자 수락 매칭(M1~M4) 구현 시 작업 지시서를 따른다.
+globs: src/modules/matching/**/*,src/modules/orders/**/*,src/modules/trades/**/*,src/database/migrations/**/*,docs/p0/p0-5b*
+alwaysApply: false
+---
+
+# P0-5b M1~M4 (판매자 수락 매칭)
+
+Apply → Accept/Reject/Cancel/Expire 백엔드 작업을 할 때 **구현 전에** 아래를 Read한다.
+
+1. **작업 지시서:** `docs/p0/p0-5b-m1-m4-plan.md` — TX 순서·Done 기준·하지 말 것
+2. **정책 SoT (M0):** `brit-front/docs/porcess/trade-seller-accept-flow.md`
+3. **요약:** `docs/p0/p0-5b-seller-accept.md`
+4. **현재 코드:** `docs/p0/p0-5-matching.md`
+
+## 순서
+
+`M1 Schema → M2 Apply → M3 Accept/Reject/Cancel → M4 release + Expire + Buy TTL`
+
+M4만 단독 착수 금지. Push·Front·로켓·`/match` 삭제는 M5+.
+
+## 구현 중
+
+- 계획 문서의 TX 순서·상태 전이를 그대로 따른다.
+- Matching이 Buy/Sell Entity를 직접 쓰는 기존 패턴 유지. 새 계층 금지.
+- M1~M4 Done 후 p0-5b를 “현재 구현 기준”으로 격상하고 p0-5를 개정한다.

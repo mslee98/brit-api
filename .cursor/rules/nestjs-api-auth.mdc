@@ -13,37 +13,18 @@ alwaysApply: false
 
 AuthService는 User Entity를 직접 바꾸지 말고 `UserService` 사용.
 
-JWT Payload 최소화: `sub`, `role`, `tokenType` (+ 세션 식별용 `sid`). 이름·전화·생년월일 등 개인정보·자주 바뀌는 값 금지.
+JWT Payload 최소화: `sub`, `sid`, `role`, `status`, `tokenType`. 이름·전화·생년월일 등 개인정보 금지. Guard는 `user_sessions`를 DB에서 재검증.
 
-전역 RBAC는 `UserRole` (`USER` / `ADMIN` / `SYS_ADMIN`). 업체별 권한은 `partner_members`가 소유(후속). 세부 Permission 테이블은 실제 필요 시.
+전역 RBAC는 `UserRole` (`USER` / `ADMIN` / `SYS_ADMIN`). 업체별 권한은 `partner_members`가 소유(후속).
 
-가입: 외부 본인인증(OCTOMO 등) 없음. `POST /auth/signup`은 `PENDING` 사용자·계좌·지갑을 생성하고 **토큰을 발급하지 않는다**. 로그인은 `ACTIVE`만 허용.
+가입: 외부 본인인증 없음. `POST /v1/auth/register`는 PENDING 사용자·계좌·지갑을 만들고 **토큰을 발급하지 않는다**. 로그인은 `ACTIVE | PENDING | REJECTED` 허용, `SUSPENDED`/`WITHDRAWN` 차단. 거래는 `canTrade`(ACTIVE + ACTIVE 계좌).
 
-## API 경로
+엔드포인트·예외 code는 `docs/p0/`가 기준이다. 여기 목록을 새로 늘리지 말고 해당 단계 문서를 연다.
 
-```text
-POST /auth/signup|login|refresh|logout
-POST /auth/login-id/check|nickname/check
-GET /banks
-GET|PATCH /users/me
-PATCH /users/me/password
-GET /admin/user-approvals
-GET /admin/user-approvals/:userId
-POST /admin/user-approvals/:userId/approve|reject
-GET /admin/users
-GET /admin/users/:userId
-POST /admin/users/:userId/suspend|unsuspend|withdraw
-GET /admin/notifications
-GET /admin/notifications/unread-count
-PATCH /admin/notifications/read-all
-PATCH /admin/notifications/:recipientNotificationId/read|archive
-```
-
-가입 시 외부 계좌인증·본인인증 API는 두지 않는다. 계좌는 제출만 하고 `PENDING_APPROVAL`로 저장한다.
+가입 시 외부 계좌인증 API는 두지 않는다. 계좌는 제출만 하고 `PENDING_APPROVAL`로 저장한다.
 가입 TX에서 `USER_REGISTRATION_REQUESTED` 알림을 ACTIVE ADMIN/SYS_ADMIN에게 생성한다(관리자 0명이면 사건만).
-신청자 APPROVED/REJECTED 알림 행은 승인/반려 시 저장하나, 미로그인 상태에서는 인앱 조회 대상이 아니다.
 관리자 정지·탈퇴 시 해당 사용자 ACTIVE 세션을 일괄 revoke한다. 탈퇴는 상태만 변경(익명화 없음).
-URL에 과도한 동사 금지 (`/get-list`, `/change-status`). REST 자원 중심. 명확한 명령만 동사 허용 (`POST /auth/login`, `POST .../unlock`).
+URL에 과도한 동사 금지. REST 자원 중심. 명확한 명령만 동사 허용 (`POST /auth/login`, `POST .../confirm-payment`).
 
 ## 응답
 
@@ -66,12 +47,11 @@ URL에 과도한 동사 금지 (`/get-list`, `/change-status`). REST 자원 중�
 Nest 예외 또는 도메인 예외 사용. `throw new Error` / `return null` / `{ success: false }` 금지.
 
 ```ts
-export class UserNotFoundException extends NotFoundException {
-  constructor() {
-    super({ code: "USER_NOT_FOUND", message: "사용자를 찾을 수 없습니다." });
-  }
-}
+throw UserAdminDomainException.notFound();
+// → new NotFoundException({ code: 'USER_NOT_FOUND', message: '사용자를 찾을 수 없어요.' })
 ```
+
+도메인마다 `*DomainException` static factory. 메시지 해요체. 프론트는 `code`로 분기.
 
 오류 응답: `statusCode`, `code`, `message`, `path`, `timestamp`.
 
