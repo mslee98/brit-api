@@ -53,6 +53,15 @@ export class UserSessionEntity {
   })
   refreshTokenHash!: string;
 
+  /** 직 직 해시. 재사용 공격 감지용 (rotation 직전 값). */
+  @Column({
+    type: 'varchar',
+    length: 255,
+    name: 'previous_refresh_token_hash',
+    nullable: true,
+  })
+  previousRefreshTokenHash!: string | null;
+
   @Column({
     type: 'varchar',
     length: 100,

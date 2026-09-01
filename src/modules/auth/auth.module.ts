@@ -19,7 +19,7 @@ import { UserSessionEntity } from './infrastructure/entities/user-session.entity
   imports: [
     TypeOrmModule.forFeature([UserSessionEntity]),
     forwardRef(() => UsersModule),
-    BanksModule,
+    forwardRef(() => BanksModule),
     NotificationsModule,
     AuthGuardsModule,
     JwtModule.registerAsync({

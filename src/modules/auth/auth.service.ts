@@ -22,18 +22,19 @@ import {
 import { parseResidentRegistrationNumber } from '../users/utils/rrn.util';
 import { BanksService } from '../banks/banks.service';
 import { NotificationService } from '../notifications/notification.service';
+import { UserBankAccountStatus } from '../users/domain/enums/user-bank-account-status.enum';
+import { ConsentType } from '../users/domain/enums/consent-type.enum';
+import { UserRole } from '../users/domain/enums/user-role.enum';
 import { UserStatus } from '../users/domain/enums/user-status.enum';
 import { UserService } from '../users/user.service';
 import { CheckLoginIdDto } from './dto/check-login-id.dto';
 import { CheckNicknameDto } from './dto/check-nickname.dto';
 import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
-import {
-  assertRequiredConsentsAgreed,
-  hasDuplicateConsentKeys,
-  SignupDto,
-} from './dto/signup';
+import { UpdateRegistrationDto } from './dto/update-registration.dto';
 import { AuthDomainException } from './exceptions/auth.exceptions';
+import { AuthClientType } from './domain/enums/auth-client-type.enum';
 import { UserSessionStatus } from './domain/enums/user-session-status.enum';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
 
@@ -47,6 +48,29 @@ const RESERVED_LOGIN_IDS = new Set([
   'undefined',
 ]);
 
+export type AuthTokenPair = {
+  accessToken: string;
+  refreshToken: string;
+  expiresInSec: number;
+  sessionId: string;
+};
+
+export type CreateSessionTokensOptions = {
+  clientType: AuthClientType;
+  accessExpiresSec?: number;
+  refreshExpiresSec?: number;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+};
+
+export type RotateSessionTokensOptions = {
+  clientType: AuthClientType;
+  role: UserRole | string;
+  status: UserStatus;
+  accessExpiresSec?: number;
+  refreshExpiresSec?: number;
+};
+
 export type AuthTokensResponse = {
   user: {
     id: string;
@@ -59,12 +83,13 @@ export type AuthTokensResponse = {
     refreshToken: string;
     expiresInSec: number;
   };
+  nextAction: 'NONE' | 'WAIT_FOR_APPROVAL' | 'ACTION_REQUIRED';
 };
 
-export type SignupResponse = {
-  id: string;
-  loginId: string;
+export type RegisterResponse = {
+  userId: string;
   status: UserStatus;
+  nextAction: 'WAIT_FOR_APPROVAL';
 };
 
 /**
@@ -109,23 +134,12 @@ export class AuthService {
     return { available: !exists };
   }
 
-  /**
-   * 회원가입. 성공 시 { id, loginId, status: PENDING }. 토큰 없음.
-   * RRN → birthDate/genderCode 파생 후 UserService.createUserInTransaction 호출.
-   * 계좌는 PENDING_APPROVAL로만 저장하며, 외부 계좌인증은 수행하지 않는다.
-   * 동일 TX에서 관리자용 USER_REGISTRATION_REQUESTED 알림을 생성한다.
-   */
-  async signup(dto: SignupDto): Promise<SignupResponse> {
-    if (hasDuplicateConsentKeys(dto.consents.items)) {
-      throw AuthDomainException.duplicateConsent();
-    }
-    if (!assertRequiredConsentsAgreed(dto.consents.items)) {
-      throw AuthDomainException.consentRequired();
-    }
+  async register(dto: RegisterDto): Promise<RegisterResponse> {
+    this.assertRequiredConsents(dto.consents);
 
     let phoneE164: string;
     try {
-      phoneE164 = toPhoneE164(dto.identity.phone);
+      phoneE164 = toPhoneE164(dto.phone);
     } catch {
       throw AuthDomainException.invalidPhone();
     }
@@ -141,27 +155,27 @@ export class AuthService {
         birthDate,
         genderCode,
       } = parseResidentRegistrationNumber(
-        dto.identity.residentRegistrationNumber,
+        dto.residentRegistrationNumber,
       ));
     } catch {
       throw AuthDomainException.invalidRrn();
     }
 
-    const loginId = dto.credentials.loginId.toLowerCase();
+    const loginId = dto.loginId.toLowerCase();
     if (RESERVED_LOGIN_IDS.has(loginId)) {
       throw AuthDomainException.invalidLoginId();
     }
 
-    const identityName = dto.identity.name.trim();
-    const accountHolderName = dto.bankAccount.accountHolderName.trim();
-    const nickname = dto.credentials.nickname?.trim() || null;
+    const identityName = dto.name.trim();
+    const accountHolderName = dto.bankAccountHolderName.trim();
+    const nickname = dto.nickname?.trim() || null;
 
     if (accountHolderName !== identityName) {
       throw AuthDomainException.nameMismatch();
     }
 
     const bank = await this.banksService.findActiveByCode(
-      dto.bankAccount.bankCode,
+      dto.bankCode,
     );
     if (!bank) {
       throw AuthDomainException.invalidBankCode();
@@ -176,7 +190,7 @@ export class AuthService {
       'TRANSACTION_PIN_PEPPER',
     );
 
-    const accountNumber = dto.bankAccount.accountNumber.replace(/\D/g, '');
+    const accountNumber = dto.bankAccountNumber.replace(/\D/g, '');
     if (accountNumber.length < 10) {
       throw AuthDomainException.invalidAccountNumber();
     }
@@ -184,17 +198,16 @@ export class AuthService {
     const accountNumberHash = hashAccountNumber(accountNumber, identityPepper);
 
     const [passwordHash, pinHash, accountNumberEncrypted] = await Promise.all([
-      hashSecret(dto.credentials.loginPassword),
-      hashTransactionPin(dto.security.pin, pinPepper),
+      hashSecret(dto.password),
+      hashTransactionPin(dto.pin, pinPepper),
       Promise.resolve(encryptAccountNumber(accountNumber, encryptionKey)),
     ]);
 
-    const agreedAt = new Date(dto.consents.agreedAt);
-    const consents = dto.consents.items.map((item) => ({
-      consentType: item.consentType,
-      documentVersion: item.documentVersion,
-      isAgreed: item.isAgreed,
-      agreedAt: item.isAgreed ? agreedAt : null,
+    const consents = dto.consents.map((item) => ({
+      consentType: item.type,
+      documentVersion: item.version,
+      isAgreed: item.agreed,
+      agreedAt: item.agreed ? new Date() : null,
     }));
 
     let userId: string;
@@ -208,10 +221,10 @@ export class AuthService {
           residentRegistrationNumber,
           birthDate,
           genderCode,
-          mobileCarrier: dto.identity.mobileCarrier,
+          mobileCarrier: dto.mobileCarrier,
           nickname,
           pinHash,
-          bankCode: dto.bankAccount.bankCode,
+          bankCode: dto.bankCode,
           accountNumberEncrypted,
           accountNumberHash,
           accountNumberMasked: maskAccountNumber(accountNumber),
@@ -242,14 +255,15 @@ export class AuthService {
     }
 
     return {
-      id: user.id,
-      loginId: user.loginId,
+      userId: user.id,
       status: user.status,
+      nextAction: 'WAIT_FOR_APPROVAL',
     };
   }
 
   /**
-   * 로그인. ACTIVE만 통과. PENDING/SUSPENDED/REJECTED/WITHDRAWN은 상태별 예외.
+   * 로그인. ACTIVE/PENDING/REJECTED 허용, SUSPENDED/WITHDRAWN 차단.
+   * ACTIVE ADMIN/SYS_ADMIN은 관리자 전용 로그인으로 유도한다.
    */
   async login(dto: LoginDto): Promise<AuthTokensResponse> {
     const user = await this.userService.findByLoginId(dto.loginId);
@@ -264,9 +278,15 @@ export class AuthService {
       throw AuthDomainException.invalidCredentials();
     }
 
+    if (await this.userService.hasActiveAdminRole(user.id)) {
+      throw AuthDomainException.adminLoginRequired();
+    }
+
     const nickname = await this.userService.getNicknameByUserId(user.id);
     const role = await this.userService.getPrimaryRole(user.id);
-    const tokens = await this.createSessionTokens(user.id, role);
+    const tokens = await this.createSessionTokens(user.id, role, user.status, {
+      clientType: AuthClientType.USER,
+    });
     await this.userService.touchLastLogin(user.id);
 
     return {
@@ -276,8 +296,56 @@ export class AuthService {
         nickname,
         phoneE164: user.phoneE164,
       },
-      tokens,
+      tokens: {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresInSec: tokens.expiresInSec,
+      },
+      nextAction: this.toNextAction(user.status),
     };
+  }
+
+  async getMe(userId: string): Promise<{
+    id: string;
+    loginId: string;
+    name: string;
+    nickname: string | null;
+    status: UserStatus;
+    bankAccount: { status: UserBankAccountStatus | null };
+    permissions: { canTrade: boolean; canUsePartnerExchange: boolean };
+    nextAction: 'NONE' | 'WAIT_FOR_APPROVAL' | 'ACTION_REQUIRED';
+  }> {
+    return this.userService.getMe(userId);
+  }
+
+  async getRegistrationStatus(userId: string): Promise<{
+    userStatus: UserStatus;
+    bankAccountStatus: UserBankAccountStatus | null;
+    registrationStatus: 'UNDER_REVIEW' | 'ACTION_REQUIRED' | 'COMPLETED';
+    submittedAt: Date;
+    rejection: { reason: string | null; rejectedAt: Date | null } | null;
+  }> {
+    return this.userService.getRegistrationStatus(userId);
+  }
+
+  async updateRegistration(
+    userId: string,
+    dto: UpdateRegistrationDto,
+  ): Promise<{
+    userId: string;
+    userStatus: UserStatus;
+    bankAccountStatus: UserBankAccountStatus;
+    registrationStatus: 'UNDER_REVIEW' | 'ACTION_REQUIRED' | 'COMPLETED';
+  }> {
+    const identityPepper =
+      this.configService.getOrThrow<string>('IDENTITY_PEPPER');
+    const encryptionKey = this.configService.getOrThrow<string>(
+      'ACCOUNT_ENCRYPTION_KEY',
+    );
+    return this.userService.resubmitRegistration(userId, dto, {
+      identityPepper,
+      encryptionKey,
+    });
   }
 
   async refresh(dto: RefreshTokenDto): Promise<{
@@ -285,48 +353,27 @@ export class AuthService {
     refreshToken: string;
     expiresInSec: number;
   }> {
-    const refreshTokenHash = hashRefreshToken(dto.refreshToken);
-    const session = await this.sessionRepository.findOne({
-      where: { refreshTokenHash },
-    });
-
-    if (
-      !session ||
-      session.status !== UserSessionStatus.ACTIVE ||
-      session.expiresAt.getTime() < Date.now()
-    ) {
-      throw AuthDomainException.invalidRefreshToken();
-    }
-
+    const session = await this.resolveActiveSessionForRefresh(dto.refreshToken);
     const user = await this.userService.findById(session.userId);
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw AuthDomainException.invalidRefreshToken();
     }
 
-    const newRefreshToken = generateRefreshToken();
-    const newHash = hashRefreshToken(newRefreshToken);
-    const refreshExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRES_SEC'),
-    );
-    const accessExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'),
-    );
+    if (await this.userService.hasActiveAdminRole(user.id)) {
+      throw AuthDomainException.adminLoginRequired();
+    }
 
-    session.refreshTokenHash = newHash;
-    session.expiresAt = new Date(Date.now() + refreshExpiresSec * 1000);
-    session.lastUsedAt = new Date();
-    await this.sessionRepository.save(session);
-
-    const accessToken = await this.signAccessToken(
-      session.userId,
-      session.id,
-      await this.userService.getPrimaryRole(session.userId),
-    );
+    const role = await this.userService.getPrimaryRole(session.userId);
+    const tokens = await this.rotateSessionTokens(session, {
+      clientType: AuthClientType.USER,
+      role,
+      status: user.status,
+    });
 
     return {
-      accessToken,
-      refreshToken: newRefreshToken,
-      expiresInSec: accessExpiresSec,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresInSec: tokens.expiresInSec,
     };
   }
 
@@ -341,16 +388,128 @@ export class AuthService {
     );
   }
 
+  async logoutByRefreshToken(refreshToken: string): Promise<void> {
+    const refreshTokenHash = hashRefreshToken(refreshToken);
+    await this.sessionRepository.update(
+      { refreshTokenHash, status: UserSessionStatus.ACTIVE },
+      {
+        status: UserSessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revokeReason: 'LOGOUT',
+      },
+    );
+  }
+
+  async logoutAll(userId: string): Promise<void> {
+    await this.sessionRepository.update(
+      { userId, status: UserSessionStatus.ACTIVE },
+      {
+        status: UserSessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revokeReason: 'LOGOUT_ALL',
+      },
+    );
+  }
+
+  async countActiveSessions(userId: string): Promise<number> {
+    return this.sessionRepository.count({
+      where: { userId, status: UserSessionStatus.ACTIVE },
+    });
+  }
+
+  async listSessionsForUser(
+    userId: string,
+    currentSessionId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      userAgent: string | null;
+      ipAddress: string | null;
+      status: UserSessionStatus;
+      createdAt: Date;
+      lastUsedAt: Date | null;
+      expiresAt: Date;
+      current: boolean;
+    }>
+  > {
+    const rows = await this.sessionRepository.find({
+      where: { userId },
+      order: { createdAt: 'DESC' },
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      userAgent: row.userAgent,
+      ipAddress: row.ipAddress,
+      status: row.status,
+      createdAt: row.createdAt,
+      lastUsedAt: row.lastUsedAt,
+      expiresAt: row.expiresAt,
+      current: row.id === currentSessionId,
+    }));
+  }
+
+  async revokeSessionForUser(
+    userId: string,
+    sessionId: string,
+    revokeReason = 'SESSION_REVOKED',
+  ): Promise<void> {
+    const result = await this.sessionRepository.update(
+      { id: sessionId, userId, status: UserSessionStatus.ACTIVE },
+      {
+        status: UserSessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revokeReason,
+      },
+    );
+    if (!result.affected) {
+      throw AuthDomainException.invalidRefreshToken();
+    }
+  }
+
+  async revokeOtherSessionsForUser(
+    userId: string,
+    currentSessionId: string,
+  ): Promise<void> {
+    await this.sessionRepository
+      .createQueryBuilder()
+      .update(UserSessionEntity)
+      .set({
+        status: UserSessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revokeReason: 'LOGOUT_OTHERS',
+      })
+      .where('user_id = :userId', { userId })
+      .andWhere('status = :status', { status: UserSessionStatus.ACTIVE })
+      .andWhere('id <> :currentSessionId', { currentSessionId })
+      .execute();
+  }
+
   /**
    * 대상 사용자의 ACTIVE 세션을 모두 REVOKED로 바꾼다.
-   * 정지·탈퇴 트랜잭션에서 EntityManager와 함께 호출한다.
+   * 정지·탈퇴·관리자 권한 변경 트랜잭션에서 EntityManager와 함께 호출한다.
+   * @returns 폐기된 ACTIVE 세션 수
    */
   async revokeAllActiveSessionsInTransaction(
     manager: EntityManager,
     userId: string,
     revokeReason: string,
+  ): Promise<number> {
+    const result = await manager.getRepository(UserSessionEntity).update(
+      { userId, status: UserSessionStatus.ACTIVE },
+      {
+        status: UserSessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revokeReason,
+      },
+    );
+    return result.affected ?? 0;
+  }
+
+  async revokeAllActiveSessions(
+    userId: string,
+    revokeReason: string,
   ): Promise<void> {
-    await manager.getRepository(UserSessionEntity).update(
+    await this.sessionRepository.update(
       { userId, status: UserSessionStatus.ACTIVE },
       {
         status: UserSessionStatus.REVOKED,
@@ -360,47 +519,64 @@ export class AuthService {
     );
   }
 
-  private assertLoginAllowed(status: UserStatus): void {
-    switch (status) {
-      case UserStatus.ACTIVE:
-        return;
-      case UserStatus.PENDING:
-        throw AuthDomainException.pendingApproval();
-      case UserStatus.SUSPENDED:
-        throw AuthDomainException.accountSuspended();
-      case UserStatus.REJECTED:
-        throw AuthDomainException.accountRejected();
-      case UserStatus.WITHDRAWN:
-        throw AuthDomainException.accountWithdrawn();
-      default:
-        throw AuthDomainException.invalidCredentials();
+  /**
+   * Refresh 토큰으로 ACTIVE 세션을 찾는다.
+   * previous_hash 매칭 시 재사용 공격으로 전체 세션을 폐기한다.
+   */
+  async resolveActiveSessionForRefresh(
+    refreshToken: string,
+  ): Promise<UserSessionEntity> {
+    const refreshTokenHash = hashRefreshToken(refreshToken);
+
+    const reused = await this.sessionRepository.findOne({
+      where: { previousRefreshTokenHash: refreshTokenHash },
+    });
+    if (reused) {
+      await this.revokeAllActiveSessions(
+        reused.userId,
+        'REFRESH_TOKEN_REUSE',
+      );
+      throw AuthDomainException.refreshTokenReuse();
     }
+
+    const session = await this.sessionRepository.findOne({
+      where: { refreshTokenHash },
+    });
+
+    if (
+      !session ||
+      session.status !== UserSessionStatus.ACTIVE ||
+      session.expiresAt.getTime() < Date.now()
+    ) {
+      throw AuthDomainException.invalidRefreshToken();
+    }
+
+    return session;
   }
 
-  private async createSessionTokens(
+  async createSessionTokens(
     userId: string,
     role: string,
-  ): Promise<{
-    accessToken: string;
-    refreshToken: string;
-    expiresInSec: number;
-  }> {
+    status: UserStatus,
+    options: CreateSessionTokensOptions,
+  ): Promise<AuthTokenPair> {
     const refreshToken = generateRefreshToken();
     const refreshTokenHash = hashRefreshToken(refreshToken);
-    const refreshExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRES_SEC'),
-    );
-    const accessExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'),
-    );
+    const refreshExpiresSec =
+      options.refreshExpiresSec ??
+      Number(this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRES_SEC'));
+    const accessExpiresSec =
+      options.accessExpiresSec ??
+      Number(this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'));
 
     const session = this.sessionRepository.create({
       userId,
       refreshTokenHash,
+      previousRefreshTokenHash: null,
       deviceId: null,
       deviceName: null,
-      userAgent: null,
-      ipAddress: null,
+      userAgent: options.userAgent ?? null,
+      ipAddress: options.ipAddress ?? null,
       status: UserSessionStatus.ACTIVE,
       expiresAt: new Date(Date.now() + refreshExpiresSec * 1000),
       lastUsedAt: new Date(),
@@ -409,34 +585,133 @@ export class AuthService {
     });
     await this.sessionRepository.save(session);
 
-    const accessToken = await this.signAccessToken(userId, session.id, role);
+    const accessToken = await this.signAccessToken(
+      userId,
+      session.id,
+      role,
+      status,
+      options.clientType,
+      accessExpiresSec,
+    );
     return {
       accessToken,
       refreshToken,
       expiresInSec: accessExpiresSec,
+      sessionId: session.id,
     };
+  }
+
+  async rotateSessionTokens(
+    session: UserSessionEntity,
+    options: RotateSessionTokensOptions,
+  ): Promise<AuthTokenPair> {
+    const newRefreshToken = generateRefreshToken();
+    const newHash = hashRefreshToken(newRefreshToken);
+    const refreshExpiresSec =
+      options.refreshExpiresSec ??
+      Number(this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRES_SEC'));
+    const accessExpiresSec =
+      options.accessExpiresSec ??
+      Number(this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'));
+
+    session.previousRefreshTokenHash = session.refreshTokenHash;
+    session.refreshTokenHash = newHash;
+    session.expiresAt = new Date(Date.now() + refreshExpiresSec * 1000);
+    session.lastUsedAt = new Date();
+    await this.sessionRepository.save(session);
+
+    const accessToken = await this.signAccessToken(
+      session.userId,
+      session.id,
+      options.role,
+      options.status,
+      options.clientType,
+      accessExpiresSec,
+    );
+
+    return {
+      accessToken,
+      refreshToken: newRefreshToken,
+      expiresInSec: accessExpiresSec,
+      sessionId: session.id,
+    };
+  }
+
+  private assertLoginAllowed(status: UserStatus): void {
+    switch (status) {
+      case UserStatus.ACTIVE:
+      case UserStatus.PENDING:
+      case UserStatus.REJECTED:
+        return;
+      case UserStatus.SUSPENDED:
+        throw AuthDomainException.accountSuspended();
+      case UserStatus.WITHDRAWN:
+        throw AuthDomainException.accountWithdrawn();
+      default:
+        throw AuthDomainException.invalidCredentials();
+    }
   }
 
   private async signAccessToken(
     userId: string,
     sessionId: string,
     role: string,
+    status: UserStatus,
+    clientType: AuthClientType,
+    accessExpiresSec: number,
   ): Promise<string> {
-    const accessExpiresSec = Number(
-      this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'),
-    );
     return this.jwtService.signAsync(
       {
         sub: userId,
         sid: sessionId,
         role,
+        roles: [role],
+        status,
         tokenType: 'access',
+        clientType,
       },
       {
         secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
         expiresIn: accessExpiresSec,
       },
     );
+  }
+
+  private assertRequiredConsents(consents: RegisterDto['consents']): void {
+    const required: ConsentType[] = [
+      ConsentType.SERVICE,
+      ConsentType.PRIVACY,
+      ConsentType.UNIQUE_IDENTIFIER,
+      ConsentType.BANK_ACCOUNT,
+    ];
+    const map = new Map<string, boolean>();
+    for (const consent of consents) {
+      const key = `${consent.type}:${consent.version}`;
+      if (map.has(key)) {
+        throw AuthDomainException.duplicateConsent();
+      }
+      map.set(key, consent.agreed);
+    }
+    for (const type of required) {
+      const agreed = consents.some(
+        (consent) => consent.type === type && consent.agreed,
+      );
+      if (!agreed) {
+        throw AuthDomainException.consentRequired();
+      }
+    }
+  }
+
+  private toNextAction(
+    status: UserStatus,
+  ): 'NONE' | 'WAIT_FOR_APPROVAL' | 'ACTION_REQUIRED' {
+    if (status === UserStatus.ACTIVE) {
+      return 'NONE';
+    }
+    if (status === UserStatus.REJECTED) {
+      return 'ACTION_REQUIRED';
+    }
+    return 'WAIT_FOR_APPROVAL';
   }
 
   private rethrowUniqueViolation(error: unknown): void {

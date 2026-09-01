@@ -119,35 +119,35 @@ export class AuthDomainException {
 
   static loginIdTaken(): ConflictException {
     return new ConflictException({
-      code: 'LOGIN_ID_TAKEN',
+      code: 'LOGIN_ID_ALREADY_EXISTS',
       message: '이미 쓰는 아이디예요.',
     });
   }
 
   static nicknameTaken(): ConflictException {
     return new ConflictException({
-      code: 'NICKNAME_TAKEN',
+      code: 'NICKNAME_ALREADY_EXISTS',
       message: '이미 쓰는 닉네임이에요.',
     });
   }
 
   static phoneExists(): ConflictException {
     return new ConflictException({
-      code: 'PHONE_EXISTS',
+      code: 'PHONE_ALREADY_EXISTS',
       message: '이미 가입된 휴대폰 번호예요.',
     });
   }
 
   static identityExists(): ConflictException {
     return new ConflictException({
-      code: 'IDENTITY_EXISTS',
+      code: 'RESIDENT_NUMBER_ALREADY_EXISTS',
       message: '이미 가입된 본인 정보예요.',
     });
   }
 
   static invalidCredentials(): UnauthorizedException {
     return new UnauthorizedException({
-      code: 'INVALID_CREDENTIALS',
+      code: 'AUTH_INVALID_CREDENTIALS',
       message: '아이디 또는 비밀번호가 올바르지 않아요.',
     });
   }
@@ -156,6 +156,20 @@ export class AuthDomainException {
     return new UnauthorizedException({
       code: 'INVALID_REFRESH_TOKEN',
       message: '세션이 만료됐어요. 다시 로그인해 주세요.',
+    });
+  }
+
+  static refreshTokenReuse(): UnauthorizedException {
+    return new UnauthorizedException({
+      code: 'REFRESH_TOKEN_REUSE',
+      message: '세션이 만료됐어요. 다시 로그인해 주세요.',
+    });
+  }
+
+  static adminLoginRequired(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'ADMIN_LOGIN_REQUIRED',
+      message: '관리자 전용 로그인 화면을 이용해 주세요.',
     });
   }
 }
