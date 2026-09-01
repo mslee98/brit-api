@@ -1,0 +1,8 @@
+/** Coin Lot 출처 (DB enum: coin_source_type) */
+export enum CoinSourceType {
+  BRIT_PURCHASE = 'BRIT_PURCHASE',
+  PARTNER_REDEEM = 'PARTNER_REDEEM',
+  PARTNER_ADMIN_GRANT = 'PARTNER_ADMIN_GRANT',
+  P2P_PURCHASE = 'P2P_PURCHASE',
+  ADMIN_ADJUSTMENT = 'ADMIN_ADJUSTMENT',
+}

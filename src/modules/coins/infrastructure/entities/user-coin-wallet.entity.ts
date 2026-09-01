@@ -10,22 +10,16 @@ import {
   VersionColumn,
 } from 'typeorm';
 
+import { UserEntity } from '../../../users/infrastructure/entities/user.entity';
 import { CoinWalletStatus } from '../../domain/enums/coin-wallet-status.enum';
-import { UserEntity } from './user.entity';
 
 /**
  * user_coin_wallets — 사용자별 Coin 잔액 집계 (users 1:1).
  *
- * 잔액 변화의 최종 근거는 후속 coin_ledger_entries다. 이 테이블은 조회용 스냅샷.
+ * 잔액 변화의 최종 근거는 coin_ledger_entries. 이 테이블은 조회용 스냅샷.
  * 가입 트랜잭션에서 0잔액 ACTIVE로 함께 생성한다.
  *
- * 잔액 구분:
- * - non_sellable: 업체 충전 가능, P2P 판매 불가
- * - sellable: P2P·충전 가능
- * - locked_*: 처리 중 잠금
- * - pending_sellable: REDEEM 확정 전 대기
- *
- * version: 낙관적 잠금 (@VersionColumn)
+ * version: 낙관적 잠금 (@VersionColumn). Write는 FOR UPDATE를 기본으로 한다.
  * bigint 잔액은 TS에서 string으로 다룬다.
  */
 @Entity({ name: 'user_coin_wallets' })
