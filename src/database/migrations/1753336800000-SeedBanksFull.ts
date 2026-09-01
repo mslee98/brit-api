@@ -2,7 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
  * 전체 은행 마스터 시드.
- * - icon/svg는 bucket/assets/banks 파일명과 맞춤
+ * - icon/svg는 brit/bucket/assets/banks 파일명과 맞춤
  * - regular_maintenance: rule/start/end 전부 null 또는 전부 값 (Check 준수)
  * - 신한·SC: 시간 없는 정기점검 문구는 maintenance_note로 이동
  */

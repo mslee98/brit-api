@@ -1,7 +1,10 @@
-import { Controller, Get, HttpCode } from '@nestjs/common';
+import { Controller, Get, HttpCode, Param, ParseIntPipe } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 
-import { BanksListResponseDto } from './dto/bank-response.dto';
+import {
+  BanksListResponseDto,
+  PublicBankResponseDto,
+} from './dto/bank-response.dto';
 import { BanksService } from './banks.service';
 
 @ApiTags('banks')
@@ -15,5 +18,15 @@ export class BanksController {
   @ApiOperation({ summary: '활성 은행 목록' })
   list(): Promise<BanksListResponseDto> {
     return this.banksService.listActiveBanks();
+  }
+
+  /** GET /v1/banks/:bankId — 활성 은행만 */
+  @Get(':bankId')
+  @HttpCode(200)
+  @ApiOperation({ summary: '활성 은행 상세' })
+  getDetail(
+    @Param('bankId', ParseIntPipe) bankId: number,
+  ): Promise<PublicBankResponseDto> {
+    return this.banksService.getActiveBankDetail(bankId);
   }
 }
