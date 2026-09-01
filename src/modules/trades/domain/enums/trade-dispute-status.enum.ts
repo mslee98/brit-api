@@ -1,0 +1,9 @@
+/** trade_disputes.status */
+export enum TradeDisputeStatus {
+  OPEN_UNASSIGNED = 'OPEN_UNASSIGNED',
+  ASSIGNED = 'ASSIGNED',
+  IN_REVIEW = 'IN_REVIEW',
+  EVIDENCE_REQUIRED = 'EVIDENCE_REQUIRED',
+  RESOLVED = 'RESOLVED',
+  CANCELLED = 'CANCELLED',
+}

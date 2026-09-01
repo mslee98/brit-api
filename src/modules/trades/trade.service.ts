@@ -45,6 +45,7 @@ import {
   TRANSFER_RECOVERY_MIN_AGE_MS,
 } from './domain/constants/trade.constants';
 import { TradeDisputePriority } from './domain/enums/trade-dispute-priority.enum';
+import { TradeDisputeResolution } from './domain/enums/trade-dispute-resolution.enum';
 import { TradeDisputeStatus } from './domain/enums/trade-dispute-status.enum';
 import { TradeEventActorType } from './domain/enums/trade-event-actor-type.enum';
 import { TradeEventCode } from './domain/enums/trade-event-code.enum';
@@ -736,6 +737,12 @@ export class TradeService {
         },
         ipAddress,
       });
+
+      await this.enqueueTradePartyPushInTransaction(manager, {
+        eventType: NotificationEventType.DISPUTE_OPENED,
+        actorUserId: adminUserId,
+        trade,
+      });
     });
     return this.getAdminTrade(tradeId);
   }
@@ -1070,6 +1077,21 @@ export class TradeService {
       actorUserId: null,
     });
     const completedDeepLink = `/trade?tradeId=${trade.id}`;
+    const dispute = await manager.getRepository(TradeDisputeEntity).findOne({
+      where: { tradeId: trade.id },
+    });
+    if (dispute && dispute.status !== TradeDisputeStatus.RESOLVED) {
+      dispute.status = TradeDisputeStatus.RESOLVED;
+      dispute.resolution = TradeDisputeResolution.FORCE_COMPLETE;
+      dispute.resolvedAt = now;
+      await manager.getRepository(TradeDisputeEntity).save(dispute);
+      await this.enqueueTradePartyPushInTransaction(manager, {
+        eventType: NotificationEventType.DISPUTE_RESOLVED,
+        actorUserId: null,
+        trade,
+        deepLink: completedDeepLink,
+      });
+    }
     await this.notificationService.enqueueTradePushInTransaction(manager, {
       eventType: NotificationEventType.TRADE_COMPLETED,
       actorUserId: null,
@@ -1127,6 +1149,11 @@ export class TradeService {
         eventCode: TradeEventCode.BUYER_PAYMENT_TIMED_OUT,
         actorType: TradeEventActorType.SYSTEM,
         actorUserId: null,
+      });
+      await this.enqueueTradePartyPushInTransaction(manager, {
+        eventType: NotificationEventType.TRADE_EXPIRED,
+        actorUserId: null,
+        trade,
       });
       return true;
     });
@@ -1202,6 +1229,11 @@ export class TradeService {
         actorType: TradeEventActorType.SYSTEM,
         actorUserId: null,
         metadata: { reasonCode: 'SELLER_CONFIRMATION_TIMEOUT' },
+      });
+      await this.enqueueTradePartyPushInTransaction(manager, {
+        eventType: NotificationEventType.DISPUTE_OPENED,
+        actorUserId: null,
+        trade,
       });
       return true;
     });
@@ -1340,6 +1372,43 @@ export class TradeService {
       actorType: input.actorType,
       actorUserId: input.actorUserId,
       metadata: { reason: input.reason, buyOrderMode: input.buyOrderMode },
+    });
+    await this.enqueueTradePartyPushInTransaction(manager, {
+      eventType: NotificationEventType.TRADE_CANCELLED,
+      actorUserId: input.actorUserId,
+      trade,
+    });
+  }
+
+  private async enqueueTradePartyPushInTransaction(
+    manager: EntityManager,
+    input: {
+      eventType: NotificationEventType;
+      actorUserId: string | null;
+      trade: TradeEntity;
+      deepLink?: string;
+    },
+  ): Promise<void> {
+    const deepLink = input.deepLink ?? `/trade?tradeId=${input.trade.id}`;
+    const base = {
+      actorUserId: input.actorUserId,
+      referenceType: NotificationReferenceType.TRADE,
+      referenceId: input.trade.id,
+      deepLink,
+      tradeId: input.trade.id,
+      buyOrderId: input.trade.buyOrderId,
+    };
+    await this.notificationService.enqueueTradePushInTransaction(manager, {
+      ...base,
+      eventType: input.eventType,
+      recipientUserId: input.trade.buyerUserId,
+      recipientRole: 'BUYER',
+    });
+    await this.notificationService.enqueueTradePushInTransaction(manager, {
+      ...base,
+      eventType: input.eventType,
+      recipientUserId: input.trade.sellerUserId,
+      recipientRole: 'SELLER',
     });
   }
 
