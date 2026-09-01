@@ -1,5 +1,3 @@
-import 'dotenv/config';
-
 import dataSource from '../data-source';
 import {
   hashSecret,
@@ -54,7 +52,30 @@ async function seedSysAdmin(): Promise<void> {
       [LOGIN_ID],
     );
     if (existing.length > 0) {
-      console.log(`[seed:sys-admin] already exists: ${LOGIN_ID} (${existing[0].id})`);
+      const userId = existing[0].id as string;
+      const profile = await dataSource.query(
+        `SELECT user_id FROM admin_profiles WHERE user_id = $1 LIMIT 1`,
+        [userId],
+      );
+      if (profile.length === 0) {
+        await dataSource.query(
+          `
+          INSERT INTO admin_profiles (
+            user_id,
+            admin_level,
+            is_leader,
+            can_view_revenue,
+            can_view_full_identity,
+            is_active
+          )
+          VALUES ($1, 3, true, false, false, true)
+          `,
+          [userId],
+        );
+        console.log(`[seed:sys-admin] backfilled admin_profiles for ${LOGIN_ID}`);
+      } else {
+        console.log(`[seed:sys-admin] already exists: ${LOGIN_ID} (${userId})`);
+      }
       return;
     }
 
@@ -104,6 +125,21 @@ async function seedSysAdmin(): Promise<void> {
           granted_by_user_id
         )
         VALUES ($1, 'SYS_ADMIN', 'ACTIVE', NULL)
+        `,
+        [userId],
+      );
+
+      await manager.query(
+        `
+        INSERT INTO admin_profiles (
+          user_id,
+          admin_level,
+          is_leader,
+          can_view_revenue,
+          can_view_full_identity,
+          is_active
+        )
+        VALUES ($1, 3, true, false, false, true)
         `,
         [userId],
       );
