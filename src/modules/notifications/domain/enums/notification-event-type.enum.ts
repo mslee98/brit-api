@@ -23,4 +23,14 @@ export enum NotificationEventType {
   TRADE_PAYMENT_REPORTED = 'TRADE_PAYMENT_REPORTED',
   /** Trade COMPLETED → 구매자 */
   TRADE_COMPLETED = 'TRADE_COMPLETED',
+  /** 판매자 거절 → 구매자 */
+  TRADE_REQUEST_REJECTED = 'TRADE_REQUEST_REJECTED',
+  /** 입금·요청 만료 → 구매·판매 */
+  TRADE_EXPIRED = 'TRADE_EXPIRED',
+  /** 거래 취소 → 구매·판매 */
+  TRADE_CANCELLED = 'TRADE_CANCELLED',
+  /** 분쟁 개시 → 구매·판매 */
+  DISPUTE_OPENED = 'DISPUTE_OPENED',
+  /** 분쟁 해결 → 구매·판매 */
+  DISPUTE_RESOLVED = 'DISPUTE_RESOLVED',
 }

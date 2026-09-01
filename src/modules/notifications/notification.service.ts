@@ -2,7 +2,6 @@ import { randomUUID } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, QueryFailedError, Repository } from 'typeorm';
-
 import {
   buildPaginationMeta,
   PaginationMeta,
@@ -22,6 +21,7 @@ import { NotificationDomainException } from './exceptions/notification.exception
 import { NotificationEventEntity } from './infrastructure/entities/notification-event.entity';
 import { NotificationOutboxEntity } from './infrastructure/entities/notification-outbox.entity';
 import { NotificationRecipientEntity } from './infrastructure/entities/notification-recipient.entity';
+import { NotificationStreamService } from './notification-stream.service';
 
 export type EnqueueTradePushInput = {
   eventType: NotificationEventType;
@@ -69,6 +69,17 @@ export type NotificationListItem = {
   };
 };
 
+export type NotificationOutboxListItem = {
+  id: string;
+  notificationEventId: string;
+  recipientUserId: string;
+  status: NotificationOutboxStatus;
+  attemptCount: number;
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 /**
  * 알림 사건·수신 관리.
  *
@@ -85,6 +96,9 @@ export class NotificationService {
     private readonly eventRepository: Repository<NotificationEventEntity>,
     @InjectRepository(NotificationRecipientEntity)
     private readonly recipientRepository: Repository<NotificationRecipientEntity>,
+    @InjectRepository(NotificationOutboxEntity)
+    private readonly outboxRepository: Repository<NotificationOutboxEntity>,
+    private readonly notificationStreamService: NotificationStreamService,
   ) {}
 
   async createEventWithRecipientsInTransaction(
@@ -122,7 +136,14 @@ export class NotificationService {
           archivedAt: null,
         }),
       );
-      await recipientRepository.save(recipients);
+      const saved = await recipientRepository.save(recipients);
+      for (const row of saved) {
+        row.notificationEvent = event;
+        this.notificationStreamService.publishToUser(
+          row.recipientUserId,
+          this.toListItem(row),
+        );
+      }
     }
 
     return event;
@@ -244,6 +265,75 @@ export class NotificationService {
     }
     const driverError = error.driverError as { code?: string };
     return driverError.code === '23505';
+  }
+
+  /**
+   * 가입 승인/반려 Push + Inbox.
+   */
+  async enqueueRegistrationPushInTransaction(
+    manager: EntityManager,
+    input: {
+      eventType:
+        | NotificationEventType.USER_REGISTRATION_APPROVED
+        | NotificationEventType.USER_REGISTRATION_REJECTED;
+      actorUserId: string;
+      referenceType: NotificationReferenceType;
+      referenceId: string;
+      deepLink: string;
+      recipientUserId: string;
+    },
+  ): Promise<void> {
+    const policy = getNotificationPolicy(input.eventType);
+    if (!policy.push) {
+      return;
+    }
+    const copy = getNotificationCopy(input.eventType);
+
+    try {
+      await manager.transaction(async (inner) => {
+        const event = await this.createEventWithRecipientsInTransaction(inner, {
+          eventType: input.eventType,
+          priority: policy.priority,
+          title: copy.title,
+          message: copy.body,
+          actorUserId: input.actorUserId,
+          referenceType: input.referenceType,
+          referenceId: input.referenceId,
+          actionPath: input.deepLink,
+          recipientUserIds: [input.recipientUserId],
+        });
+        const payload = buildTradePushPayload({
+          notificationId: event.id,
+          eventType: input.eventType,
+          title: copy.title,
+          body: copy.body,
+          deepLink: input.deepLink,
+          referenceType: input.referenceType,
+          referenceId: input.referenceId,
+        });
+        const outboxRepository = inner.getRepository(NotificationOutboxEntity);
+        await outboxRepository.save(
+          outboxRepository.create({
+            notificationEventId: event.id,
+            recipientUserId: input.recipientUserId,
+            status: NotificationOutboxStatus.PENDING,
+            attemptCount: 0,
+            nextAttemptAt: new Date(),
+            lastError: null,
+            payload,
+          }),
+        );
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        return;
+      }
+      this.logger.warn(
+        `registration push enqueue failed type=${input.eventType}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /** 가입 제출 → ACTIVE ADMIN/SYS_ADMIN에게 알림. 관리자 0명이면 사건만 생성. */
@@ -408,6 +498,33 @@ export class NotificationService {
     recipient.isArchived = true;
     recipient.archivedAt = new Date();
     await this.recipientRepository.save(recipient);
+  }
+
+  async listOutbox(
+    status: NotificationOutboxStatus.FAILED | NotificationOutboxStatus.SKIPPED,
+    page: number,
+    size: number,
+  ): Promise<{ items: NotificationOutboxListItem[]; pagination: PaginationMeta }> {
+    const [rows, totalItems] = await this.outboxRepository.findAndCount({
+      where: { status },
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * size,
+      take: size,
+    });
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        notificationEventId: row.notificationEventId,
+        recipientUserId: row.recipientUserId,
+        status: row.status,
+        attemptCount: row.attemptCount,
+        lastError: row.lastError,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+      pagination: buildPaginationMeta(page, size, totalItems),
+    };
   }
 
   private async getOwnedRecipient(
