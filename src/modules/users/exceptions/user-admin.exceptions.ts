@@ -33,4 +33,25 @@ export class UserAdminDomainException {
       message: '사유를 입력해 주세요.',
     });
   }
+
+  static userNotActive(): ConflictException {
+    return new ConflictException({
+      code: 'USER_NOT_ACTIVE',
+      message: 'ACTIVE 사용자만 P2P 주문에 참여할 수 있어요.',
+    });
+  }
+
+  static activeBankAccountRequired(): ConflictException {
+    return new ConflictException({
+      code: 'ACTIVE_BANK_ACCOUNT_REQUIRED',
+      message: 'ACTIVE 계좌가 있어야 P2P 주문에 참여할 수 있어요.',
+    });
+  }
+
+  static adminP2pNotAllowed(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'ADMIN_P2P_NOT_ALLOWED',
+      message: '관리자 계정은 P2P 거래에 참여할 수 없어요.',
+    });
+  }
 }

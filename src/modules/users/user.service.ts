@@ -1,13 +1,31 @@
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
 import {
   buildPaginationMeta,
   PaginationMeta,
 } from '../../common/dto/pagination-query.dto';
+import {
+  decryptAccountNumber,
+  encryptAccountNumber,
+  hashAccountNumber,
+  maskAccountNumber,
+} from '../../common/utils/account-crypto.util';
 import { AuthService } from '../auth/auth.service';
+import { UpdateRegistrationDto } from '../auth/dto/update-registration.dto';
+import { BankEntity } from '../banks/infrastructure/entities/bank.entity';
+import { CoinService } from '../coins/coin.service';
+import { CoinWalletStatus } from '../coins/domain/enums/coin-wallet-status.enum';
+import { CoinWalletResponseDto } from '../coins/dto/coin-response.dto';
+import { NotificationEventType } from '../notifications/domain/enums/notification-event-type.enum';
+import { NotificationReferenceType } from '../notifications/domain/enums/notification-reference-type.enum';
 import { NotificationService } from '../notifications/notification.service';
+import { TradeDisputeStatus } from '../trades/domain/enums/trade-dispute-status.enum';
+import { TradeStatus } from '../trades/domain/enums/trade-status.enum';
+import { TradeDisputeEntity } from '../trades/infrastructure/entities/trade-dispute.entity';
+import { TradeEntity } from '../trades/infrastructure/entities/trade.entity';
 import { ApprovalDecision } from './domain/enums/approval-decision.enum';
 import { BankAccountReviewDecision } from './domain/enums/bank-account-review-decision.enum';
 import { GenderCode } from './domain/enums/gender-code.enum';
@@ -17,16 +35,25 @@ import { RoleGrantStatus } from './domain/enums/role-grant-status.enum';
 import { UserBankAccountStatus } from './domain/enums/user-bank-account-status.enum';
 import { UserRole } from './domain/enums/user-role.enum';
 import { UserStatus } from './domain/enums/user-status.enum';
-import { CoinWalletStatus } from './domain/enums/coin-wallet-status.enum';
 import {
   AdminUserDetailDto,
   AdminUserListItemDto,
 } from './dto/admin-user-response.dto';
 import {
+  AdminUserOpsSnapshotDto,
+  AdminWalletStatusView,
+} from './dto/admin-user-ops-snapshot.dto';
+import {
+  AdminPartyDto,
+  type AdminPartySummary,
+} from './dto/admin-party.dto';
+import {
   ApproveUserRegistrationDto,
+  RegistrationRejectTarget,
   RejectUserRegistrationDto,
 } from './dto/approve-user-registration.dto';
 import { SearchAdminUsersDto } from './dto/search-admin-users.dto';
+import { SearchRegistrationReviewsDto } from './dto/search-registration-reviews.dto';
 import {
   UserApprovalDetailDto,
   UserApprovalListItemDto,
@@ -36,7 +63,6 @@ import { UserApprovalDomainException } from './exceptions/user-approval.exceptio
 import { UserApprovalReviewEntity } from './infrastructure/entities/user-approval-review.entity';
 import { UserBankAccountReviewEntity } from './infrastructure/entities/user-bank-account-review.entity';
 import { UserBankAccountEntity } from './infrastructure/entities/user-bank-account.entity';
-import { UserCoinWalletEntity } from './infrastructure/entities/user-coin-wallet.entity';
 import { UserConsentEntity } from './infrastructure/entities/user-consent.entity';
 import { UserProfileEntity } from './infrastructure/entities/user-profile.entity';
 import { UserRoleEntity } from './infrastructure/entities/user-role.entity';
@@ -77,6 +103,14 @@ export type CreateUserInTransactionInput = {
   consents: CreateUserConsentInput[];
 };
 
+/** Trade Snapshot용 ACTIVE 계좌 평문 */
+export type ActiveBankAccountPlaintext = {
+  bankAccountId: string;
+  bankCode: string;
+  accountNumber: string;
+  accountHolderName: string;
+};
+
 /**
  * UsersModule 도메인 서비스.
  * Auth는 User Entity를 직접 쓰지 말고 이 서비스를 통해 생성·조회한다.
@@ -91,7 +125,9 @@ export type CreateUserInTransactionInput = {
 export class UserService {
   constructor(
     private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
+    private readonly coinService: CoinService,
     @Inject(forwardRef(() => AuthService))
     private readonly authService: AuthService,
     @InjectRepository(UserEntity)
@@ -136,12 +172,298 @@ export class UserService {
     return profile?.nickname ?? null;
   }
 
+  async getNameByUserId(userId: string): Promise<string | null> {
+    const profile = await this.profileRepository.findOne({
+      where: { userId },
+      select: ['name'],
+    });
+    return profile?.name ?? null;
+  }
+
+  /** 관리자 P2P 화면용 구매자·판매자 요약 batch 조회 */
+  async getAdminPartySummaries(
+    userIds: string[],
+  ): Promise<Map<string, AdminPartySummary>> {
+    const uniqueIds = [...new Set(userIds.filter(Boolean))];
+    const result = new Map<string, AdminPartySummary>();
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    const rows = await this.userRepository
+      .createQueryBuilder('user')
+      .innerJoin(UserProfileEntity, 'profile', 'profile.user_id = user.id')
+      .select('user.id', 'userId')
+      .addSelect('user.login_id', 'loginId')
+      .addSelect('profile.name', 'name')
+      .where('user.id IN (:...userIds)', { userIds: uniqueIds })
+      .getRawMany<{ userId: string; loginId: string; name: string }>();
+
+    for (const row of rows) {
+      result.set(row.userId, {
+        userId: row.userId,
+        loginId: row.loginId,
+        name: row.name,
+      });
+    }
+    return result;
+  }
+
+  toAdminPartyDto(summary: AdminPartySummary | undefined): AdminPartyDto {
+    return {
+      userId: summary?.userId ?? '',
+      loginId: summary?.loginId ?? '',
+      name: summary?.name ?? '',
+    };
+  }
+
   async getPrimaryRole(userId: string): Promise<UserRole> {
     const role = await this.roleRepository.findOne({
       where: { userId, status: RoleGrantStatus.ACTIVE },
       order: { grantedAt: 'ASC' },
     });
     return role?.role ?? UserRole.USER;
+  }
+
+  /** ACTIVE ADMIN 또는 SYS_ADMIN 역할 보유 여부 */
+  async hasActiveAdminRole(userId: string): Promise<boolean> {
+    const count = await this.roleRepository.count({
+      where: {
+        userId,
+        status: RoleGrantStatus.ACTIVE,
+        role: In([UserRole.ADMIN, UserRole.SYS_ADMIN]),
+      },
+    });
+    return count > 0;
+  }
+
+  /** JWT용 — SYS_ADMIN 우선, 없으면 ADMIN */
+  async getHighestAdminRole(userId: string): Promise<UserRole | null> {
+    const roles = await this.roleRepository.find({
+      where: {
+        userId,
+        status: RoleGrantStatus.ACTIVE,
+        role: In([UserRole.ADMIN, UserRole.SYS_ADMIN]),
+      },
+    });
+    if (roles.some((row) => row.role === UserRole.SYS_ADMIN)) {
+      return UserRole.SYS_ADMIN;
+    }
+    if (roles.some((row) => row.role === UserRole.ADMIN)) {
+      return UserRole.ADMIN;
+    }
+    return null;
+  }
+
+  async listActiveRoles(userId: string): Promise<UserRole[]> {
+    const rows = await this.roleRepository.find({
+      where: { userId, status: RoleGrantStatus.ACTIVE },
+      order: { grantedAt: 'ASC' },
+    });
+    return rows.map((row) => row.role);
+  }
+
+  async countActiveSysAdmins(
+    manager?: EntityManager,
+  ): Promise<number> {
+    const roleRepository = manager
+      ? manager.getRepository(UserRoleEntity)
+      : this.roleRepository;
+
+    return roleRepository
+      .createQueryBuilder('role')
+      .innerJoin(UserEntity, 'user', 'user.id = role.userId')
+      .innerJoin(
+        'admin_profiles',
+        'profile',
+        'profile.user_id = role.userId AND profile.is_active = true',
+      )
+      .where('role.role = :role', { role: UserRole.SYS_ADMIN })
+      .andWhere('role.status = :status', { status: RoleGrantStatus.ACTIVE })
+      .andWhere('user.status = :userStatus', { userStatus: UserStatus.ACTIVE })
+      .getCount();
+  }
+
+  /**
+   * ACTIVE SYS_ADMIN 역할 행을 FOR UPDATE로 잠근 뒤 수를 반환한다.
+   * 마지막 SYS_ADMIN 비활성·회수 동시성 보호용.
+   */
+  async lockAndCountActiveSysAdmins(
+    manager: EntityManager,
+  ): Promise<number> {
+    const rows = await manager
+      .getRepository(UserRoleEntity)
+      .createQueryBuilder('role')
+      .innerJoin(UserEntity, 'user', 'user.id = role.userId')
+      .innerJoin(
+        'admin_profiles',
+        'profile',
+        'profile.user_id = role.userId AND profile.is_active = true',
+      )
+      .where('role.role = :role', { role: UserRole.SYS_ADMIN })
+      .andWhere('role.status = :status', { status: RoleGrantStatus.ACTIVE })
+      .andWhere('user.status = :userStatus', {
+        userStatus: UserStatus.ACTIVE,
+      })
+      .setLock('pessimistic_write')
+      .getMany();
+    return rows.length;
+  }
+
+  async grantAdminRoleInTransaction(
+    manager: EntityManager,
+    input: {
+      userId: string;
+      role: UserRole.ADMIN | UserRole.SYS_ADMIN;
+      grantedByUserId: string;
+    },
+  ): Promise<UserRoleEntity> {
+    const roleRepository = manager.getRepository(UserRoleEntity);
+    const existing = await roleRepository.findOne({
+      where: {
+        userId: input.userId,
+        role: input.role,
+        status: RoleGrantStatus.ACTIVE,
+      },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    const revoked = await roleRepository.findOne({
+      where: {
+        userId: input.userId,
+        role: input.role,
+        status: RoleGrantStatus.REVOKED,
+      },
+      order: { revokedAt: 'DESC' },
+    });
+    if (revoked) {
+      revoked.status = RoleGrantStatus.ACTIVE;
+      revoked.grantedByUserId = input.grantedByUserId;
+      revoked.grantedAt = new Date();
+      revoked.revokedByUserId = null;
+      revoked.revokedAt = null;
+      revoked.revokeReason = null;
+      return roleRepository.save(revoked);
+    }
+
+    const created = roleRepository.create({
+      userId: input.userId,
+      role: input.role,
+      status: RoleGrantStatus.ACTIVE,
+      grantedByUserId: input.grantedByUserId,
+      grantedAt: new Date(),
+      revokedByUserId: null,
+      revokedAt: null,
+      revokeReason: null,
+    });
+    return roleRepository.save(created);
+  }
+
+  async revokeAdminRoleInTransaction(
+    manager: EntityManager,
+    input: {
+      userId: string;
+      role: UserRole.ADMIN | UserRole.SYS_ADMIN;
+      revokedByUserId: string;
+      reason: string;
+    },
+  ): Promise<UserRoleEntity | null> {
+    const roleRepository = manager.getRepository(UserRoleEntity);
+    const existing = await roleRepository.findOne({
+      where: {
+        userId: input.userId,
+        role: input.role,
+        status: RoleGrantStatus.ACTIVE,
+      },
+    });
+    if (!existing) {
+      return null;
+    }
+    existing.status = RoleGrantStatus.REVOKED;
+    existing.revokedByUserId = input.revokedByUserId;
+    existing.revokedAt = new Date();
+    existing.revokeReason = input.reason;
+    return roleRepository.save(existing);
+  }
+
+  /**
+   * P2P 주문 참여 조건: users.status=ACTIVE 그리고 ACTIVE 계좌 ≥ 1.
+   * Orders 모듈 TX 내부에서 호출한다.
+   */
+  async assertP2pEligibleInTransaction(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<void> {
+    const user = await manager.getRepository(UserEntity).findOne({
+      where: { id: userId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!user) {
+      throw UserAdminDomainException.notFound();
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      throw UserAdminDomainException.userNotActive();
+    }
+
+    const adminRoleCount = await manager.getRepository(UserRoleEntity).count({
+      where: {
+        userId,
+        status: RoleGrantStatus.ACTIVE,
+        role: In([UserRole.ADMIN, UserRole.SYS_ADMIN]),
+      },
+    });
+    if (adminRoleCount > 0) {
+      throw UserAdminDomainException.adminP2pNotAllowed();
+    }
+
+    const activeBankCount = await manager
+      .getRepository(UserBankAccountEntity)
+      .count({
+        where: {
+          userId,
+          status: UserBankAccountStatus.ACTIVE,
+        },
+      });
+    if (activeBankCount < 1) {
+      throw UserAdminDomainException.activeBankAccountRequired();
+    }
+  }
+
+  /**
+   * Trade 생성용 ACTIVE 계좌 Snapshot.
+   * 가장 최근 활성화된 ACTIVE 계좌 1건을 복호화해 반환한다.
+   */
+  async getActiveBankAccountPlaintextInTransaction(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<ActiveBankAccountPlaintext | null> {
+    const account = await manager.getRepository(UserBankAccountEntity).findOne({
+      where: {
+        userId,
+        status: UserBankAccountStatus.ACTIVE,
+      },
+      order: { activatedAt: 'DESC', createdAt: 'DESC' },
+    });
+    if (!account) {
+      return null;
+    }
+
+    const encryptionKey = this.configService.getOrThrow<string>(
+      'ACCOUNT_ENCRYPTION_KEY',
+    );
+    const accountNumber = decryptAccountNumber(
+      account.accountNumberEncrypted,
+      encryptionKey,
+    );
+
+    return {
+      bankAccountId: account.id,
+      bankCode: account.bankCode,
+      accountNumber,
+      accountHolderName: account.holderName,
+    };
   }
 
   /**
@@ -189,7 +511,6 @@ export class UserService {
     const roleRepository = manager.getRepository(UserRoleEntity);
     const bankAccountRepository = manager.getRepository(UserBankAccountEntity);
     const consentRepository = manager.getRepository(UserConsentEntity);
-    const walletRepository = manager.getRepository(UserCoinWalletEntity);
 
     const user = userRepository.create({
       loginId: input.loginId.toLowerCase(),
@@ -243,32 +564,45 @@ export class UserService {
       await consentRepository.save(consent);
     }
 
-    const wallet = walletRepository.create({
-      userId: user.id,
-      nonSellableBalance: '0',
-      sellableBalance: '0',
-      lockedNonSellableBalance: '0',
-      lockedSellableBalance: '0',
-      pendingSellableBalance: '0',
-      status: CoinWalletStatus.ACTIVE,
-    });
-    await walletRepository.save(wallet);
+    await this.coinService.createEmptyWalletInTransaction(manager, user.id);
 
     return user;
   }
 
-  async listPendingApprovals(
-    page: number,
-    size: number,
+  async listRegistrationReviews(
+    query: SearchRegistrationReviewsDto,
   ): Promise<{ items: UserApprovalListItemDto[]; pagination: PaginationMeta }> {
-    const [users, totalItems] = await this.userRepository
+    const { page, size } = query;
+    const qb = this.userRepository
       .createQueryBuilder('user')
       .innerJoinAndSelect('user.profile', 'profile')
-      .where('user.status = :status', { status: UserStatus.PENDING })
       .orderBy('user.registrationSubmittedAt', 'ASC')
       .skip((page - 1) * size)
-      .take(size)
-      .getManyAndCount();
+      .take(size);
+
+    if (query.status) {
+      qb.where('user.status = :status', { status: query.status });
+    } else {
+      qb.where('user.status IN (:...statuses)', {
+        statuses: [UserStatus.PENDING, UserStatus.REJECTED, UserStatus.ACTIVE],
+      });
+    }
+
+    if (query.keyword) {
+      const like = `%${query.keyword}%`;
+      qb.andWhere(
+        '(user.loginId ILIKE :like OR profile.name ILIKE :like OR profile.nickname ILIKE :like)',
+        { like },
+      );
+    }
+    if (query.from) {
+      qb.andWhere('user.registrationSubmittedAt >= :from', { from: query.from });
+    }
+    if (query.to) {
+      qb.andWhere('user.registrationSubmittedAt <= :to', { to: query.to });
+    }
+
+    const [users, totalItems] = await qb.getManyAndCount();
 
     const userIds = users.map((user) => user.id);
     const pendingBanks =
@@ -298,7 +632,9 @@ export class UserService {
     };
   }
 
-  async getApprovalDetail(userId: string): Promise<UserApprovalDetailDto> {
+  async getRegistrationReviewDetail(
+    userId: string,
+  ): Promise<UserApprovalDetailDto> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
       relations: { profile: true },
@@ -327,11 +663,147 @@ export class UserService {
     return this.toDetail(user, user.profile, bankAccount);
   }
 
+  async getMe(userId: string): Promise<{
+    id: string;
+    loginId: string;
+    name: string;
+    nickname: string | null;
+    status: UserStatus;
+    bankAccount: { status: UserBankAccountStatus | null };
+    permissions: { canTrade: boolean; canUsePartnerExchange: boolean };
+    nextAction: 'NONE' | 'WAIT_FOR_APPROVAL' | 'ACTION_REQUIRED';
+  }> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      relations: { profile: true },
+    });
+    if (!user?.profile) {
+      throw UserAdminDomainException.notFound();
+    }
+    const latestBank = await this.bankAccountRepository.findOne({
+      where: { userId },
+      order: { requestedAt: 'DESC' },
+    });
+    const canTrade =
+      user.status === UserStatus.ACTIVE &&
+      latestBank?.status === UserBankAccountStatus.ACTIVE;
+    return {
+      id: user.id,
+      loginId: user.loginId,
+      name: user.profile.name,
+      nickname: user.profile.nickname,
+      status: user.status,
+      bankAccount: { status: latestBank?.status ?? null },
+      permissions: {
+        canTrade: Boolean(canTrade),
+        canUsePartnerExchange: Boolean(canTrade),
+      },
+      nextAction: this.getNextAction(user.status, latestBank?.status ?? null),
+    };
+  }
+
+  async getRegistrationStatus(userId: string): Promise<{
+    userStatus: UserStatus;
+    bankAccountStatus: UserBankAccountStatus | null;
+    registrationStatus: 'UNDER_REVIEW' | 'ACTION_REQUIRED' | 'COMPLETED';
+    submittedAt: Date;
+    rejection: { reason: string | null; rejectedAt: Date | null } | null;
+  }> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw UserApprovalDomainException.notFound();
+    }
+    const latestBank = await this.bankAccountRepository.findOne({
+      where: { userId },
+      order: { requestedAt: 'DESC' },
+    });
+    return {
+      userStatus: user.status,
+      bankAccountStatus: latestBank?.status ?? null,
+      registrationStatus: this.getRegistrationViewStatus(
+        user.status,
+        latestBank?.status ?? null,
+      ),
+      submittedAt: user.registrationSubmittedAt,
+      rejection:
+        user.status === UserStatus.REJECTED || latestBank?.status === UserBankAccountStatus.REJECTED
+          ? { reason: user.rejectionReason, rejectedAt: user.rejectedAt }
+          : null,
+    };
+  }
+
+  async resubmitRegistration(
+    userId: string,
+    dto: UpdateRegistrationDto,
+    options: { identityPepper: string; encryptionKey: string },
+  ): Promise<{
+    userId: string;
+    userStatus: UserStatus;
+    bankAccountStatus: UserBankAccountStatus;
+    registrationStatus: 'UNDER_REVIEW' | 'ACTION_REQUIRED' | 'COMPLETED';
+  }> {
+    return this.dataSource.transaction(async (manager) => {
+      const userRepository = manager.getRepository(UserEntity);
+      const bankAccountRepository = manager.getRepository(UserBankAccountEntity);
+      const user = await userRepository.findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw UserApprovalDomainException.notFound();
+      }
+      if (user.status !== UserStatus.PENDING && user.status !== UserStatus.REJECTED) {
+        throw UserApprovalDomainException.notPending();
+      }
+      const latestBank = await bankAccountRepository.findOne({
+        where: { userId },
+        order: { requestedAt: 'DESC' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!dto.bankAccount) {
+        throw UserApprovalDomainException.rejectionReasonRequired();
+      }
+      const accountNumber = dto.bankAccount.accountNumber.replace(/\D/g, '');
+      const bank = bankAccountRepository.create({
+        userId,
+        bankCode: dto.bankAccount.bankCode,
+        accountNumberEncrypted: encryptAccountNumber(
+          accountNumber,
+          options.encryptionKey,
+        ),
+        accountNumberHash: hashAccountNumber(accountNumber, options.identityPepper),
+        accountNumberMasked: maskAccountNumber(accountNumber),
+        holderName: dto.bankAccount.holderName.trim(),
+        status: UserBankAccountStatus.PENDING_APPROVAL,
+        replacesBankAccountId: latestBank?.id ?? null,
+      });
+      await bankAccountRepository.save(bank);
+      if (user.status === UserStatus.REJECTED) {
+        user.status = UserStatus.PENDING;
+        user.rejectedAt = null;
+        user.rejectionReason = null;
+        await userRepository.save(user);
+      }
+      return {
+        userId: user.id,
+        userStatus: user.status,
+        bankAccountStatus: bank.status,
+        registrationStatus: this.getRegistrationViewStatus(user.status, bank.status),
+      };
+    });
+  }
+
   async approveRegistration(
     adminUserId: string,
     userId: string,
     dto: ApproveUserRegistrationDto,
-  ): Promise<{ id: string; status: UserStatus }> {
+  ): Promise<{
+    userId: string;
+    userStatus: UserStatus;
+    bankAccountStatus: UserBankAccountStatus;
+    registrationStatus: 'UNDER_REVIEW' | 'ACTION_REQUIRED' | 'COMPLETED';
+    approvedAt: Date;
+  }> {
     if (
       !dto.identityChecked ||
       !dto.phoneChecked ||
@@ -420,16 +892,28 @@ export class UserService {
       });
       await bankReviewRepository.save(bankReview);
 
-      await this.notificationService.createRegistrationApprovedInTransaction(
+      await this.notificationService.enqueueRegistrationPushInTransaction(
         manager,
         {
-          adminUserId,
-          applicantUserId: userId,
-          approvalReviewId: approvalReview.id,
+          eventType: NotificationEventType.USER_REGISTRATION_APPROVED,
+          actorUserId: adminUserId,
+          referenceType: NotificationReferenceType.USER_APPROVAL_REVIEW,
+          referenceId: approvalReview.id,
+          deepLink: '/auth/login',
+          recipientUserId: userId,
         },
       );
 
-      return { id: user.id, status: user.status };
+      return {
+        userId: user.id,
+        userStatus: user.status,
+        bankAccountStatus: bankAccount.status,
+        registrationStatus: this.getRegistrationViewStatus(
+          user.status,
+          bankAccount.status,
+        ),
+        approvedAt: now,
+      };
     });
   }
 
@@ -437,9 +921,12 @@ export class UserService {
     adminUserId: string,
     userId: string,
     dto: RejectUserRegistrationDto,
-  ): Promise<{ id: string; status: UserStatus }> {
-    const rejectionReason = dto.rejectionReason.trim();
+  ): Promise<{ userId: string; userStatus: UserStatus }> {
+    const rejectionReason = dto.reason.trim();
     if (!rejectionReason) {
+      throw UserApprovalDomainException.rejectionReasonRequired();
+    }
+    if (!dto.targets.length) {
       throw UserApprovalDomainException.rejectionReasonRequired();
     }
 
@@ -494,42 +981,56 @@ export class UserService {
       });
       await approvalReviewRepository.save(approvalReview);
 
-      user.status = UserStatus.REJECTED;
-      user.rejectedAt = now;
-      user.rejectionReason = rejectionReason;
-      user.approvedAt = null;
-      user.approvedByUserId = null;
-      await userRepository.save(user);
+      const rejectIdentity = dto.targets.includes(RegistrationRejectTarget.IDENTITY);
+      const rejectBank = dto.targets.includes(
+        RegistrationRejectTarget.BANK_ACCOUNT,
+      );
+
+      if (rejectIdentity) {
+        user.status = UserStatus.REJECTED;
+        user.rejectedAt = now;
+        user.rejectionReason = rejectionReason;
+        user.approvedAt = null;
+        user.approvedByUserId = null;
+        await userRepository.save(user);
+      }
 
       const previousStatus = bankAccount.status;
-      bankAccount.status = UserBankAccountStatus.REJECTED;
-      bankAccount.reviewedAt = now;
-      bankAccount.reviewedByUserId = adminUserId;
-      bankAccount.rejectionReason = rejectionReason;
-      await bankAccountRepository.save(bankAccount);
+      if (rejectBank) {
+        bankAccount.status = UserBankAccountStatus.REJECTED;
+        bankAccount.reviewedAt = now;
+        bankAccount.reviewedByUserId = adminUserId;
+        bankAccount.rejectionReason = rejectionReason;
+        await bankAccountRepository.save(bankAccount);
+      }
 
       const bankReview = bankReviewRepository.create({
         bankAccountId: bankAccount.id,
         userId,
         previousStatus,
         decision: BankAccountReviewDecision.REJECTED,
-        resultingStatus: UserBankAccountStatus.REJECTED,
+        resultingStatus: rejectBank
+          ? UserBankAccountStatus.REJECTED
+          : bankAccount.status,
         reviewedByUserId: adminUserId,
         reviewReason: rejectionReason,
         reviewedAt: now,
       });
       await bankReviewRepository.save(bankReview);
 
-      await this.notificationService.createRegistrationRejectedInTransaction(
+      await this.notificationService.enqueueRegistrationPushInTransaction(
         manager,
         {
-          adminUserId,
-          applicantUserId: userId,
-          approvalReviewId: approvalReview.id,
+          eventType: NotificationEventType.USER_REGISTRATION_REJECTED,
+          actorUserId: adminUserId,
+          referenceType: NotificationReferenceType.USER_APPROVAL_REVIEW,
+          referenceId: approvalReview.id,
+          deepLink: '/auth/registration-status',
+          recipientUserId: userId,
         },
       );
 
-      return { id: user.id, status: user.status };
+      return { userId: user.id, userStatus: user.status };
     });
   }
 
@@ -578,6 +1079,162 @@ export class UserService {
       throw UserAdminDomainException.notFound();
     }
     return this.toAdminDetail(user, user.profile);
+  }
+
+  async getAdminOpsSnapshot(
+    userId: string,
+  ): Promise<AdminUserOpsSnapshotDto> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw UserAdminDomainException.notFound();
+    }
+
+    const [wallet, bankAccount, tradeRows, disputeRows, activeSessions] =
+      await Promise.all([
+        this.coinService.findWallet(userId),
+        this.findLatestBankAccount(userId),
+        this.dataSource
+          .getRepository(TradeEntity)
+          .createQueryBuilder('trade')
+          .select('trade.status', 'status')
+          .addSelect('COUNT(*)', 'count')
+          .addSelect('COALESCE(SUM(trade.paymentAmount), 0)', 'paymentSum')
+          .where(
+            'trade.buyer_user_id = :userId OR trade.seller_user_id = :userId',
+            { userId },
+          )
+          .groupBy('trade.status')
+          .getRawMany<{
+            status: TradeStatus;
+            count: string;
+            paymentSum: string;
+          }>(),
+        this.dataSource
+          .getRepository(TradeDisputeEntity)
+          .createQueryBuilder('dispute')
+          .innerJoin('dispute.trade', 'trade')
+          .select('dispute.status', 'status')
+          .addSelect('COUNT(*)', 'count')
+          .where(
+            'trade.buyer_user_id = :userId OR trade.seller_user_id = :userId',
+            { userId },
+          )
+          .groupBy('dispute.status')
+          .getRawMany<{ status: TradeDisputeStatus; count: string }>(),
+        this.authService.countActiveSessions(userId),
+      ]);
+
+    const walletDto = wallet
+      ? CoinWalletResponseDto.from(wallet)
+      : {
+          totalBalance: '0',
+          availableBalance: '0',
+          sellableBalance: '0',
+          lockedBalance: '0',
+        };
+
+    const ongoingStatuses = new Set<TradeStatus>([
+      TradeStatus.WAITING_BUYER_PAYMENT,
+      TradeStatus.PAYMENT_TIMEOUT,
+      TradeStatus.WAITING_SELLER_CONFIRMATION,
+      TradeStatus.COIN_TRANSFERRING,
+    ]);
+    const openDisputeStatuses = new Set<TradeDisputeStatus>([
+      TradeDisputeStatus.OPEN_UNASSIGNED,
+      TradeDisputeStatus.ASSIGNED,
+      TradeDisputeStatus.IN_REVIEW,
+      TradeDisputeStatus.EVIDENCE_REQUIRED,
+    ]);
+
+    let lifetimeTrades = 0;
+    let ongoingTrades = 0;
+    let completedTrades = 0;
+    let ongoingPayment: bigint = 0n;
+    for (const row of tradeRows) {
+      const count = toCount(row.count);
+      lifetimeTrades += count;
+      if (ongoingStatuses.has(row.status)) {
+        ongoingTrades += count;
+        ongoingPayment += BigInt(row.paymentSum || '0');
+      }
+      if (row.status === TradeStatus.COMPLETED) {
+        completedTrades += count;
+      }
+    }
+
+    let lifetimeDisputes = 0;
+    let ongoingDisputes = 0;
+    for (const row of disputeRows) {
+      const count = toCount(row.count);
+      lifetimeDisputes += count;
+      if (openDisputeStatuses.has(row.status)) {
+        ongoingDisputes += count;
+      }
+    }
+
+    const bank = bankAccount
+      ? await this.dataSource.getRepository(BankEntity).findOne({
+          where: { code: bankAccount.bankCode },
+        })
+      : null;
+
+    const recentActivities = user.lastLoginAt
+      ? [
+          {
+            at: user.lastLoginAt,
+            type: 'login',
+            label: '로그인',
+          },
+        ]
+      : [];
+
+    return {
+      userId,
+      bankStatus:
+        bankAccount?.status ??
+        (user.status === UserStatus.PENDING
+          ? UserBankAccountStatus.PENDING_APPROVAL
+          : user.status === UserStatus.REJECTED
+            ? UserBankAccountStatus.REJECTED
+            : user.status === UserStatus.SUSPENDED
+              ? UserBankAccountStatus.SUSPENDED
+              : user.status === UserStatus.WITHDRAWN
+                ? UserBankAccountStatus.CLOSED
+                : UserBankAccountStatus.ACTIVE),
+      walletStatus: mapWalletStatus(user.status, wallet?.status ?? null),
+      totalCoin: walletDto.totalBalance,
+      availableCoin: walletDto.availableBalance,
+      sellableCoin: walletDto.sellableBalance,
+      lockedCoin: walletDto.lockedBalance,
+      ongoingTrades,
+      ongoingTradeAmount:
+        ongoingTrades > 0 ? ongoingPayment.toString() : null,
+      lifetimeTrades,
+      completedTrades,
+      ongoingDisputes,
+      lifetimeDisputes,
+      activeSessions,
+      needsPinUnlock: false,
+      bankName: bank?.name ?? null,
+      accountNumberMasked: bankAccount?.accountNumberMasked ?? null,
+      recentActivities,
+    };
+  }
+
+  private async findLatestBankAccount(
+    userId: string,
+  ): Promise<UserBankAccountEntity | null> {
+    const active = await this.bankAccountRepository.findOne({
+      where: { userId, status: UserBankAccountStatus.ACTIVE },
+      order: { activatedAt: 'DESC' },
+    });
+    if (active) return active;
+    return this.bankAccountRepository.findOne({
+      where: { userId },
+      order: { requestedAt: 'DESC' },
+    });
   }
 
   async suspendUser(
@@ -791,6 +1448,42 @@ export class UserService {
       rejectionReason: user.rejectionReason,
     };
   }
+
+  private getRegistrationViewStatus(
+    userStatus: UserStatus,
+    bankStatus: UserBankAccountStatus | null,
+  ): 'UNDER_REVIEW' | 'ACTION_REQUIRED' | 'COMPLETED' {
+    if (
+      userStatus === UserStatus.ACTIVE &&
+      bankStatus === UserBankAccountStatus.ACTIVE
+    ) {
+      return 'COMPLETED';
+    }
+    if (
+      userStatus === UserStatus.REJECTED ||
+      bankStatus === UserBankAccountStatus.REJECTED
+    ) {
+      return 'ACTION_REQUIRED';
+    }
+    return 'UNDER_REVIEW';
+  }
+
+  private getNextAction(
+    userStatus: UserStatus,
+    bankStatus: UserBankAccountStatus | null,
+  ): 'NONE' | 'WAIT_FOR_APPROVAL' | 'ACTION_REQUIRED' {
+    const registrationStatus = this.getRegistrationViewStatus(
+      userStatus,
+      bankStatus,
+    );
+    if (registrationStatus === 'COMPLETED') {
+      return 'NONE';
+    }
+    if (registrationStatus === 'ACTION_REQUIRED') {
+      return 'ACTION_REQUIRED';
+    }
+    return 'WAIT_FOR_APPROVAL';
+  }
 }
 
 function maskResidentRegistrationNumber(rrn: string): string {
@@ -799,4 +1492,29 @@ function maskResidentRegistrationNumber(rrn: string): string {
     return '*******';
   }
   return `${digits.slice(0, 6)}*******`;
+}
+
+function toCount(value: string | number | null | undefined): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function mapWalletStatus(
+  userStatus: UserStatus,
+  walletStatus: CoinWalletStatus | null,
+): AdminWalletStatusView {
+  if (
+    userStatus === UserStatus.SUSPENDED ||
+    walletStatus === CoinWalletStatus.SUSPENDED ||
+    walletStatus === CoinWalletStatus.CLOSED
+  ) {
+    return AdminWalletStatusView.LOCKED;
+  }
+  if (
+    userStatus === UserStatus.PENDING ||
+    userStatus === UserStatus.REJECTED
+  ) {
+    return AdminWalletStatusView.RESTRICTED;
+  }
+  return AdminWalletStatusView.NORMAL;
 }

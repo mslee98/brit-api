@@ -13,9 +13,9 @@ import {
 } from 'typeorm';
 
 import { UserSessionEntity } from '../../../auth/infrastructure/entities/user-session.entity';
+import { UserCoinWalletEntity } from '../../../coins/infrastructure/entities/user-coin-wallet.entity';
 import { UserStatus } from '../../domain/enums/user-status.enum';
 import { UserBankAccountEntity } from './user-bank-account.entity';
-import { UserCoinWalletEntity } from './user-coin-wallet.entity';
 import { UserProfileEntity } from './user-profile.entity';
 import { UserRoleEntity } from './user-role.entity';
 

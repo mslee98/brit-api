@@ -1,5 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+
+export enum RegistrationRejectTarget {
+  IDENTITY = 'IDENTITY',
+  BANK_ACCOUNT = 'BANK_ACCOUNT',
+}
 
 export class ApproveUserRegistrationDto {
   @ApiProperty({ description: '신원(주민번호·실명) 확인 여부' })
@@ -26,15 +39,26 @@ export class ApproveUserRegistrationDto {
 }
 
 export class RejectUserRegistrationDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsBoolean()
-  identityChecked?: boolean;
+  @ApiProperty({ enum: RegistrationRejectTarget, isArray: true })
+  @IsArray()
+  @IsEnum(RegistrationRejectTarget, { each: true })
+  targets!: RegistrationRejectTarget[];
+
+  @ApiProperty({ maxLength: 100 })
+  @IsString()
+  @MaxLength(100)
+  reasonCode!: string;
+
+  @ApiProperty({ minLength: 1, maxLength: 500 })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  reason!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
-  phoneChecked?: boolean;
+  identityChecked?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -44,11 +68,10 @@ export class RejectUserRegistrationDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
-  holderNameMatched?: boolean;
+  phoneChecked?: boolean;
 
-  @ApiProperty({ minLength: 1, maxLength: 500 })
-  @IsString()
-  @MinLength(1)
-  @MaxLength(500)
-  rejectionReason!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  holderNameMatched?: boolean;
 }

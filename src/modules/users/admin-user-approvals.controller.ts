@@ -17,35 +17,36 @@ import {
 
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { ActiveAdminGuard } from '../admins/guards/active-admin.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from './domain/enums/user-role.enum';
 import {
   ApproveUserRegistrationDto,
   RejectUserRegistrationDto,
 } from './dto/approve-user-registration.dto';
+import { SearchRegistrationReviewsDto } from './dto/search-registration-reviews.dto';
 import { UserService } from './user.service';
 
-@ApiTags('admin-user-approvals')
+@ApiTags('admin-registration-reviews')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ActiveAdminGuard)
 @Roles(UserRole.ADMIN, UserRole.SYS_ADMIN)
-@Controller('admin/user-approvals')
+@Controller('admin/registration-reviews')
 export class AdminUserApprovalsController {
   constructor(private readonly userService: UserService) {}
 
   @Get()
-  @ApiOperation({ summary: '가입 승인 대기 목록' })
-  listPending(@Query() query: PaginationQueryDto) {
-    return this.userService.listPendingApprovals(query.page, query.size);
+  @ApiOperation({ summary: '가입 심사 목록' })
+  listPending(@Query() query: SearchRegistrationReviewsDto) {
+    return this.userService.listRegistrationReviews(query);
   }
 
   @Get(':userId')
-  @ApiOperation({ summary: '가입 승인 대기 상세' })
+  @ApiOperation({ summary: '가입 심사 상세' })
   getDetail(@Param('userId', ParseUUIDPipe) userId: string) {
-    return this.userService.getApprovalDetail(userId);
+    return this.userService.getRegistrationReviewDetail(userId);
   }
 
   @Post(':userId/approve')

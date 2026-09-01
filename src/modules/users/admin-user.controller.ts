@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiOkResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
@@ -19,8 +20,10 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { ActiveAdminGuard } from '../admins/guards/active-admin.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from './domain/enums/user-role.enum';
+import { AdminUserOpsSnapshotDto } from './dto/admin-user-ops-snapshot.dto';
 import { SearchAdminUsersDto } from './dto/search-admin-users.dto';
 import { SuspendUserDto } from './dto/suspend-user.dto';
 import { WithdrawUserDto } from './dto/withdraw-user.dto';
@@ -28,7 +31,7 @@ import { UserService } from './user.service';
 
 @ApiTags('admin-users')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ActiveAdminGuard)
 @Roles(UserRole.ADMIN, UserRole.SYS_ADMIN)
 @Controller('admin/users')
 export class AdminUserController {
@@ -38,6 +41,15 @@ export class AdminUserController {
   @ApiOperation({ summary: '관리자 사용자 목록·검색' })
   search(@Query() query: SearchAdminUsersDto) {
     return this.userService.searchUsers(query);
+  }
+
+  @Get(':userId/ops-snapshot')
+  @ApiOperation({
+    summary: '관리자 사용자 운영 요약 (Coin·거래·분쟁·계좌·세션)',
+  })
+  @ApiOkResponse({ type: AdminUserOpsSnapshotDto })
+  getOpsSnapshot(@Param('userId', ParseUUIDPipe) userId: string) {
+    return this.userService.getAdminOpsSnapshot(userId);
   }
 
   @Get(':userId')
