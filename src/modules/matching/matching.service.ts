@@ -616,6 +616,17 @@ export class MatchingService {
 
       await this.tradeRequestReservationService.release(manager, request);
 
+      await this.notificationService.enqueueTradePushInTransaction(manager, {
+        eventType: NotificationEventType.TRADE_REQUEST_REJECTED,
+        actorUserId: sellerUserId,
+        referenceType: NotificationReferenceType.TRADE_REQUEST,
+        referenceId: request.id,
+        deepLink: `/trade/matching/${request.buyOrderId}`,
+        recipientUserId: request.buyerUserId,
+        recipientRole: 'BUYER',
+        buyOrderId: request.buyOrderId,
+      });
+
       return TradeRequestResponseDto.from(request, null);
     });
   }
