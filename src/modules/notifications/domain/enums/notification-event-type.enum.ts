@@ -15,4 +15,12 @@ export enum NotificationEventType {
    * REJECTED 사용자는 로그인 불가이므로 인앱 조회는 후속 채널용.
    */
   USER_REGISTRATION_REJECTED = 'USER_REGISTRATION_REJECTED',
+  /** 구매자 Apply → 판매자 */
+  TRADE_REQUEST_CREATED = 'TRADE_REQUEST_CREATED',
+  /** 판매자 Accept → 구매자 */
+  TRADE_REQUEST_ACCEPTED = 'TRADE_REQUEST_ACCEPTED',
+  /** 구매자 입금 신고 → 판매자 */
+  TRADE_PAYMENT_REPORTED = 'TRADE_PAYMENT_REPORTED',
+  /** Trade COMPLETED → 구매자 */
+  TRADE_COMPLETED = 'TRADE_COMPLETED',
 }

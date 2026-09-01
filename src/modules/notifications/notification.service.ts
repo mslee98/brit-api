@@ -1,17 +1,41 @@
-import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, QueryFailedError, Repository } from 'typeorm';
 
 import {
   buildPaginationMeta,
   PaginationMeta,
 } from '../../common/dto/pagination-query.dto';
+import {
+  buildTradePushPayload,
+  getNotificationCopy,
+  getNotificationPolicy,
+  type NotificationCopyRole,
+  type TradePushPayload,
+} from './domain/constants/notification.constants';
 import { NotificationEventType } from './domain/enums/notification-event-type.enum';
+import { NotificationOutboxStatus } from './domain/enums/notification-outbox-status.enum';
 import { NotificationPriority } from './domain/enums/notification-priority.enum';
 import { NotificationReferenceType } from './domain/enums/notification-reference-type.enum';
 import { NotificationDomainException } from './exceptions/notification.exceptions';
 import { NotificationEventEntity } from './infrastructure/entities/notification-event.entity';
+import { NotificationOutboxEntity } from './infrastructure/entities/notification-outbox.entity';
 import { NotificationRecipientEntity } from './infrastructure/entities/notification-recipient.entity';
+
+export type EnqueueTradePushInput = {
+  eventType: NotificationEventType;
+  actorUserId: string | null;
+  referenceType: NotificationReferenceType;
+  referenceId: string;
+  deepLink: string;
+  recipientUserId: string;
+  /** TRADE_COMPLETED 등 역할별 카피 */
+  recipientRole?: NotificationCopyRole;
+  tradeId?: string;
+  sellOrderId?: string;
+  buyOrderId?: string;
+};
 
 export type CreateNotificationEventInput = {
   eventType: NotificationEventType;
@@ -54,6 +78,8 @@ export type NotificationListItem = {
  */
 @Injectable()
 export class NotificationService {
+  private readonly logger = new Logger(NotificationService.name);
+
   constructor(
     @InjectRepository(NotificationEventEntity)
     private readonly eventRepository: Repository<NotificationEventEntity>,
@@ -102,6 +128,124 @@ export class NotificationService {
     return event;
   }
 
+  /**
+   * 거래 푸시: 같은 업무 TX의 savepoint에서 event + outbox INSERT.
+   * 문구·우선순위는 NOTIFICATION_POLICY에서 조회한다.
+   * unique 충돌·푸시 실패는 업무 커밋을 막지 않는다.
+   */
+  async enqueueTradePushInTransaction(
+    manager: EntityManager,
+    input: EnqueueTradePushInput,
+  ): Promise<void> {
+    const policy = getNotificationPolicy(input.eventType);
+    if (!policy.push) {
+      return;
+    }
+    const copy = getNotificationCopy(input.eventType, input.recipientRole);
+
+    try {
+      await manager.transaction(async (inner) => {
+        const event = await this.createEventWithRecipientsInTransaction(inner, {
+          eventType: input.eventType,
+          priority: policy.priority,
+          title: copy.title,
+          message: copy.body,
+          actorUserId: input.actorUserId,
+          referenceType: input.referenceType,
+          referenceId: input.referenceId,
+          actionPath: input.deepLink,
+          recipientUserIds: [input.recipientUserId],
+        });
+        const payload = buildTradePushPayload({
+          notificationId: event.id,
+          eventType: input.eventType,
+          title: copy.title,
+          body: copy.body,
+          deepLink: input.deepLink,
+          referenceType: input.referenceType,
+          referenceId: input.referenceId,
+          tradeId: input.tradeId,
+          sellOrderId: input.sellOrderId,
+          buyOrderId: input.buyOrderId,
+        });
+        const outboxRepository = inner.getRepository(NotificationOutboxEntity);
+        await outboxRepository.save(
+          outboxRepository.create({
+            notificationEventId: event.id,
+            recipientUserId: input.recipientUserId,
+            status: NotificationOutboxStatus.PENDING,
+            attemptCount: 0,
+            nextAttemptAt: new Date(),
+            lastError: null,
+            payload,
+          }),
+        );
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        return;
+      }
+      this.logger.warn(
+        `trade push enqueue failed type=${input.eventType} ref=${input.referenceId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** DEV 전용: 로그인 사용자에게 테스트 Web Push outbox 1건. */
+  async enqueueDevTestPush(
+    recipientUserId: string,
+  ): Promise<{ queued: true; referenceId: string }> {
+    const referenceId = randomUUID();
+    const title = '테스트 알림';
+    const body = 'OS 알림이 보이면 푸시 경로는 살아 있어요';
+
+    await this.eventRepository.manager.transaction(async (manager) => {
+      const event = await this.createEventWithRecipientsInTransaction(manager, {
+        eventType: NotificationEventType.TRADE_COMPLETED,
+        title,
+        message: body,
+        actorUserId: recipientUserId,
+        referenceType: NotificationReferenceType.USER,
+        referenceId,
+        actionPath: '/',
+        recipientUserIds: [recipientUserId],
+      });
+      const payload: TradePushPayload = buildTradePushPayload({
+        notificationId: event.id,
+        eventType: NotificationEventType.TRADE_COMPLETED,
+        title,
+        body,
+        deepLink: '/',
+        referenceType: NotificationReferenceType.USER,
+        referenceId,
+      });
+      const outboxRepository = manager.getRepository(NotificationOutboxEntity);
+      await outboxRepository.save(
+        outboxRepository.create({
+          notificationEventId: event.id,
+          recipientUserId,
+          status: NotificationOutboxStatus.PENDING,
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+          lastError: null,
+          payload,
+        }),
+      );
+    });
+
+    return { queued: true, referenceId };
+  }
+
+  private isUniqueViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) {
+      return false;
+    }
+    const driverError = error.driverError as { code?: string };
+    return driverError.code === '23505';
+  }
+
   /** 가입 제출 → ACTIVE ADMIN/SYS_ADMIN에게 알림. 관리자 0명이면 사건만 생성. */
   async createRegistrationRequestedInTransaction(
     manager: EntityManager,
@@ -110,11 +254,14 @@ export class NotificationService {
       recipientUserIds: string[];
     },
   ): Promise<NotificationEventEntity> {
+    const policy = getNotificationPolicy(
+      NotificationEventType.USER_REGISTRATION_REQUESTED,
+    );
     return this.createEventWithRecipientsInTransaction(manager, {
-      eventType: NotificationEventType.USER_REGISTRATION_REQUESTED,
-      priority: NotificationPriority.NORMAL,
-      title: '신규 가입 승인 요청',
-      message: '신규 사용자의 가입 정보 검토가 필요합니다.',
+      eventType: policy.eventType,
+      priority: policy.priority,
+      title: policy.title,
+      message: policy.body,
       actorUserId: params.applicantUserId,
       referenceType: NotificationReferenceType.USER,
       referenceId: params.applicantUserId,
@@ -135,11 +282,14 @@ export class NotificationService {
       approvalReviewId: string;
     },
   ): Promise<NotificationEventEntity> {
+    const policy = getNotificationPolicy(
+      NotificationEventType.USER_REGISTRATION_APPROVED,
+    );
     return this.createEventWithRecipientsInTransaction(manager, {
-      eventType: NotificationEventType.USER_REGISTRATION_APPROVED,
-      priority: NotificationPriority.NORMAL,
-      title: '가입 승인이 완료되었습니다',
-      message: '관리자 검토가 완료되어 서비스를 이용할 수 있습니다.',
+      eventType: policy.eventType,
+      priority: policy.priority,
+      title: policy.title,
+      message: policy.body,
       actorUserId: params.adminUserId,
       referenceType: NotificationReferenceType.USER_APPROVAL_REVIEW,
       referenceId: params.approvalReviewId,
@@ -160,11 +310,14 @@ export class NotificationService {
       approvalReviewId: string;
     },
   ): Promise<NotificationEventEntity> {
+    const policy = getNotificationPolicy(
+      NotificationEventType.USER_REGISTRATION_REJECTED,
+    );
     return this.createEventWithRecipientsInTransaction(manager, {
-      eventType: NotificationEventType.USER_REGISTRATION_REJECTED,
-      priority: NotificationPriority.NORMAL,
-      title: '가입 신청 검토 결과',
-      message: '가입 신청이 반려되었습니다. 반려 사유를 확인해 주세요.',
+      eventType: policy.eventType,
+      priority: policy.priority,
+      title: policy.title,
+      message: policy.body,
       actorUserId: params.adminUserId,
       referenceType: NotificationReferenceType.USER_APPROVAL_REVIEW,
       referenceId: params.approvalReviewId,

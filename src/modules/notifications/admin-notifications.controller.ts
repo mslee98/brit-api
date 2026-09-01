@@ -20,12 +20,13 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { UserRole } from '../users/domain/enums/user-role.enum';
+import { ActiveAdminGuard } from '../admins/guards/active-admin.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { NotificationService } from './notification.service';
 
 @ApiTags('admin-notifications')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ActiveAdminGuard)
 @Roles(UserRole.ADMIN, UserRole.SYS_ADMIN)
 @Controller('admin/notifications')
 export class AdminNotificationsController {

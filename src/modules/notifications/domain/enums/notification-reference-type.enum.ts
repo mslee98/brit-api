@@ -5,4 +5,7 @@
 export enum NotificationReferenceType {
   USER = 'USER',
   USER_APPROVAL_REVIEW = 'USER_APPROVAL_REVIEW',
+  TRADE_REQUEST = 'TRADE_REQUEST',
+  TRADE = 'TRADE',
+  SELL_ORDER = 'SELL_ORDER',
 }
