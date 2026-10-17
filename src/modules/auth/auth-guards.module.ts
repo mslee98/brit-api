@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { AccessTokenVerifier } from './access-token.verifier';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
@@ -22,7 +23,13 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
       }),
     }),
   ],
-  providers: [JwtAuthGuard, RolesGuard],
-  exports: [TypeOrmModule, JwtModule, JwtAuthGuard, RolesGuard],
+  providers: [AccessTokenVerifier, JwtAuthGuard, RolesGuard],
+  exports: [
+    TypeOrmModule,
+    JwtModule,
+    AccessTokenVerifier,
+    JwtAuthGuard,
+    RolesGuard,
+  ],
 })
 export class AuthGuardsModule {}
