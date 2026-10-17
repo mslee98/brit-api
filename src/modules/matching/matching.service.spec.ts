@@ -15,6 +15,7 @@ import { TradeStatus } from '../trades/domain/enums/trade-status.enum';
 import { TradeEntity } from '../trades/infrastructure/entities/trade.entity';
 import { UserService } from '../users/user.service';
 import { NotificationService } from '../notifications/notification.service';
+import { OrderRealtimePublisher } from '../orders/realtime/order-realtime.publisher';
 import { MatchingAttemptResult } from './domain/enums/matching-attempt-result.enum';
 import { TradeRequestRejectionReason } from './domain/enums/trade-request-rejection-reason.enum';
 import { TradeRequestStatus } from './domain/enums/trade-request-status.enum';
@@ -191,10 +192,26 @@ describe('MatchingService (Browse+Select)', () => {
           },
         },
         {
+          provide: OrderRealtimePublisher,
+          useValue: {
+            publishBuyOrder: jest.fn(),
+            publishSellOrder: jest.fn(),
+            publishTradeRequest: jest.fn(),
+            publishMatchingChanged: jest.fn(),
+          },
+        },
+        {
           provide: DataSource,
           useValue: {
             transaction: async (fn: (m: EntityManager) => Promise<unknown>) => {
               const manager = {
+                query: async () => [
+                  {
+                    nickname: '테스터',
+                    completed_count: 0,
+                    settled_count: 0,
+                  },
+                ],
                 getRepository: (entity: unknown) => {
                   if (entity === BuyOrderEntity) {
                     return {
@@ -318,7 +335,13 @@ describe('MatchingService (Browse+Select)', () => {
               }
               throw new Error('unknown');
             },
-            query: async () => [],
+            query: async () => [
+              {
+                nickname: '테스터',
+                completed_count: 0,
+                settled_count: 0,
+              },
+            ],
           },
         },
         {

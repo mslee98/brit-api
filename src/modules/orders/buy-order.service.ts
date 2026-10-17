@@ -34,6 +34,7 @@ import {
 } from './dto/search-orders.dto';
 import { OrderDomainException } from './exceptions/order.exceptions';
 import { BuyOrderEntity } from './infrastructure/entities/buy-order.entity';
+import { OrderRealtimePublisher } from './realtime/order-realtime.publisher';
 import { nextOrderNumber } from './utils/order-number.util';
 import { isPositiveAmountString } from '../coins/utils/coin-amount.util';
 
@@ -51,6 +52,7 @@ export class BuyOrderService {
     private readonly matchingService: MatchingService,
     @InjectRepository(BuyOrderEntity)
     private readonly buyOrderRepository: Repository<BuyOrderEntity>,
+    private readonly orderRealtime: OrderRealtimePublisher,
   ) {}
 
   async createBuyOrder(
@@ -103,6 +105,7 @@ export class BuyOrderService {
       return orderRepository.save(order);
     });
 
+    this.orderRealtime.publishBuyOrder(saved.id);
     return BuyOrderResponseDto.from(saved);
   }
 
@@ -147,7 +150,7 @@ export class BuyOrderService {
     buyerUserId: string,
     orderId: string,
   ): Promise<BuyOrderResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const cancelled = await this.dataSource.transaction(async (manager) => {
       const orderRepository = manager.getRepository(BuyOrderEntity);
       const order = await orderRepository.findOne({
         where: { id: orderId, buyerUserId },
@@ -171,6 +174,8 @@ export class BuyOrderService {
       const saved = await orderRepository.save(order);
       return BuyOrderResponseDto.from(saved);
     });
+    this.orderRealtime.publishBuyOrder(orderId);
+    return cancelled;
   }
 
   async listMyBuyOrders(

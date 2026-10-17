@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AdminsModule } from '../admins/admins.module';
@@ -10,6 +10,7 @@ import { MatchingPolicyEntity } from '../orders/infrastructure/entities/matching
 import { SellOrderCoinLotEntity } from '../orders/infrastructure/entities/sell-order-coin-lot.entity';
 import { SellOrderEntity } from '../orders/infrastructure/entities/sell-order.entity';
 import { TradesModule } from '../trades/trades.module';
+import { OrdersModule } from '../orders/orders.module';
 import { AdminMatchingController } from './admin-matching.controller';
 import { MatchingAttemptEntity } from './infrastructure/entities/matching-attempt.entity';
 import { TradeRequestEntity } from './infrastructure/entities/trade-request.entity';
@@ -32,6 +33,7 @@ import { TradeRequestReservationService } from './trade-request-reservation.serv
     AdminsModule,
     UsersModule,
     TradesModule,
+    forwardRef(() => OrdersModule),
     NotificationsModule,
   ],
   controllers: [AdminMatchingController, TradeRequestController],

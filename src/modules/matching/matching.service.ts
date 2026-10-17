@@ -42,6 +42,7 @@ import {
   MatchingCandidatesResponseDto,
   MatchingStatusResponseDto,
   SearchMatchingCandidatesDto,
+  TradeRequestBuyerSummaryDto,
   TradeRequestResponseDto,
 } from './dto/matching-response.dto';
 import { MatchingDomainException } from './exceptions/matching.exceptions';
@@ -49,6 +50,7 @@ import { MatchingAttemptEntity } from './infrastructure/entities/matching-attemp
 import { TradeRequestEntity } from './infrastructure/entities/trade-request.entity';
 import { SearchMatchingAttemptsDto } from './dto/search-matching-attempts.dto';
 import { TradeRequestReservationService } from './trade-request-reservation.service';
+import { OrderRealtimePublisher } from '../orders/realtime/order-realtime.publisher';
 
 type CandidateCursor = {
   completedTradeCount: number;
@@ -85,6 +87,7 @@ export class MatchingService {
     private readonly matchingAttemptRepository: Repository<MatchingAttemptEntity>,
     @InjectRepository(TradeRequestEntity)
     private readonly tradeRequestRepository: Repository<TradeRequestEntity>,
+    private readonly orderRealtime: OrderRealtimePublisher,
   ) {}
 
   async selectMatch(
@@ -92,7 +95,7 @@ export class MatchingService {
     buyOrderId: string,
     dto: MatchBuyOrderDto,
   ): Promise<MatchBuyOrderResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const matched = await this.dataSource.transaction(async (manager) => {
       const buyOrderRepository = manager.getRepository(BuyOrderEntity);
       const buyOrder = await buyOrderRepository.findOne({
         where: { id: buyOrderId, buyerUserId },
@@ -218,6 +221,10 @@ export class MatchingService {
         tradeStatus: TradeStatus.WAITING_BUYER_PAYMENT,
       };
     });
+    this.orderRealtime.publishBuyOrder(buyOrderId);
+    this.orderRealtime.publishSellOrder(dto.sellOrderId);
+    this.orderRealtime.publishMatchingChanged();
+    return matched;
   }
 
   /**
@@ -232,7 +239,7 @@ export class MatchingService {
   ): Promise<ApplyBuyOrderResponseDto> {
     const key = idempotencyKey.trim();
 
-    return this.dataSource.transaction(async (manager) => {
+    const applied = await this.dataSource.transaction(async (manager) => {
       const buyOrderRepository = manager.getRepository(BuyOrderEntity);
       const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
       const sellOrderRepository = manager.getRepository(SellOrderEntity);
@@ -385,6 +392,9 @@ export class MatchingService {
 
       return ApplyBuyOrderResponseDto.from(tradeRequest);
     });
+    this.orderRealtime.publishTradeRequest(applied.tradeRequestId);
+    this.orderRealtime.publishMatchingChanged();
+    return applied;
   }
 
   async getTradeRequest(
@@ -401,11 +411,14 @@ export class MatchingService {
       throw MatchingDomainException.tradeRequestNotFound();
     }
 
-    const trade = await this.dataSource.getRepository(TradeEntity).findOne({
-      where: { tradeRequestId: request.id },
-    });
+    const [trade, buyer] = await Promise.all([
+      this.dataSource.getRepository(TradeEntity).findOne({
+        where: { tradeRequestId: request.id },
+      }),
+      this.loadBuyerSummary(request.buyerUserId),
+    ]);
 
-    return TradeRequestResponseDto.from(request, trade?.id ?? null);
+    return TradeRequestResponseDto.from(request, trade?.id ?? null, buyer);
   }
 
   /**
@@ -425,7 +438,8 @@ export class MatchingService {
     if (!request) {
       return null;
     }
-    return TradeRequestResponseDto.from(request, null);
+    const buyer = await this.loadBuyerSummary(request.buyerUserId);
+    return TradeRequestResponseDto.from(request, null, buyer);
   }
 
   /**
@@ -435,7 +449,7 @@ export class MatchingService {
     sellerUserId: string,
     tradeRequestId: string,
   ): Promise<AcceptTradeRequestResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const accepted = await this.dataSource.transaction(async (manager) => {
       const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
       const buyOrderRepository = manager.getRepository(BuyOrderEntity);
       const sellOrderRepository = manager.getRepository(SellOrderEntity);
@@ -582,6 +596,8 @@ export class MatchingService {
         },
       };
     });
+    this.orderRealtime.publishTradeRequest(tradeRequestId);
+    return accepted;
   }
 
   async rejectTradeRequest(
@@ -589,7 +605,7 @@ export class MatchingService {
     tradeRequestId: string,
     reasonCode: TradeRequestRejectionReason,
   ): Promise<TradeRequestResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const rejected = await this.dataSource.transaction(async (manager) => {
       const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
       const request = await tradeRequestRepository.findOne({
         where: { id: tradeRequestId },
@@ -627,15 +643,19 @@ export class MatchingService {
         buyOrderId: request.buyOrderId,
       });
 
-      return TradeRequestResponseDto.from(request, null);
+      const buyer = await this.loadBuyerSummary(request.buyerUserId, manager);
+      return TradeRequestResponseDto.from(request, null, buyer);
     });
+    this.orderRealtime.publishTradeRequest(tradeRequestId);
+    this.orderRealtime.publishMatchingChanged();
+    return rejected;
   }
 
   async cancelTradeRequest(
     buyerUserId: string,
     tradeRequestId: string,
   ): Promise<TradeRequestResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const cancelled = await this.dataSource.transaction(async (manager) => {
       const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
       const request = await tradeRequestRepository.findOne({
         where: { id: tradeRequestId },
@@ -661,8 +681,12 @@ export class MatchingService {
 
       await this.tradeRequestReservationService.release(manager, request);
 
-      return TradeRequestResponseDto.from(request, null);
+      const buyer = await this.loadBuyerSummary(request.buyerUserId, manager);
+      return TradeRequestResponseDto.from(request, null, buyer);
     });
+    this.orderRealtime.publishTradeRequest(tradeRequestId);
+    this.orderRealtime.publishMatchingChanged();
+    return cancelled;
   }
 
   async listCandidates(
@@ -845,6 +869,7 @@ export class MatchingService {
       buyOrder.nextMatchableAt = null;
       await repository.save(buyOrder);
     });
+    this.orderRealtime.publishBuyOrder(buyOrderId);
   }
 
   /**
@@ -868,17 +893,17 @@ export class MatchingService {
    * Request TTL 만료: EXPIRED + release. Accept와 FOR UPDATE 배타.
    */
   async expireTradeRequest(tradeRequestId: string): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
+    const expired = await this.dataSource.transaction(async (manager) => {
       const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
       const request = await tradeRequestRepository.findOne({
         where: { id: tradeRequestId },
         lock: { mode: 'pessimistic_write' },
       });
       if (!request || request.status !== TradeRequestStatus.PENDING_SELLER) {
-        return;
+        return false;
       }
       if (request.expiresAt.getTime() > Date.now()) {
-        return;
+        return false;
       }
 
       const now = new Date();
@@ -887,7 +912,11 @@ export class MatchingService {
       await tradeRequestRepository.save(request);
 
       await this.tradeRequestReservationService.release(manager, request);
+      return true;
     });
+    if (!expired) return;
+    this.orderRealtime.publishTradeRequest(tradeRequestId);
+    this.orderRealtime.publishMatchingChanged();
   }
 
   async listAdminAttempts(
@@ -1217,6 +1246,53 @@ export class MatchingService {
     } catch {
       throw MatchingDomainException.invalidCursor();
     }
+  }
+
+  /**
+   * 판매자 수락 UI용 구매자 요약.
+   * completionRate = settled(COMPLETED+CANCELLED)=0 → 100, else floor(completed/settled*100)
+   */
+  private async loadBuyerSummary(
+    buyerUserId: string,
+    manager?: EntityManager,
+  ): Promise<TradeRequestBuyerSummaryDto> {
+    const ds = manager ?? this.dataSource;
+    const rows = (await ds.query(
+      `
+      SELECT
+        p.nickname,
+        COALESCE(stats.completed_count, 0)::int AS completed_count,
+        COALESCE(stats.settled_count, 0)::int AS settled_count
+      FROM (SELECT $1::uuid AS user_id) u
+      LEFT JOIN user_profiles p ON p.user_id = u.user_id
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) FILTER (WHERE t.status = $2)::int AS completed_count,
+          COUNT(*) FILTER (WHERE t.status IN ($2, $3))::int AS settled_count
+        FROM trades t
+        WHERE t.buyer_user_id = u.user_id
+      ) stats ON true
+      `,
+      [buyerUserId, TradeStatus.COMPLETED, TradeStatus.CANCELLED],
+    )) as Array<{
+      nickname: string | null;
+      completed_count: number;
+      settled_count: number;
+    }>;
+
+    const row = rows[0];
+    const completedTradeCount = Number(row?.completed_count ?? 0);
+    const settledCount = Number(row?.settled_count ?? 0);
+    const completionRate =
+      settledCount === 0
+        ? 100
+        : Math.floor((completedTradeCount / settledCount) * 100);
+
+    return {
+      nicknameMasked: maskNickname(row?.nickname ?? null),
+      completedTradeCount,
+      completionRate,
+    };
   }
 
   private async findActiveMatchingPolicy(

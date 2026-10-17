@@ -17,6 +17,9 @@ import { MatchingPolicyEntity } from './infrastructure/entities/matching-policy.
 import { OrderNumberSequenceEntity } from './infrastructure/entities/order-number-sequence.entity';
 import { SellOrderCoinLotEntity } from './infrastructure/entities/sell-order-coin-lot.entity';
 import { SellOrderEntity } from './infrastructure/entities/sell-order.entity';
+import { TradeRequestEntity } from '../matching/infrastructure/entities/trade-request.entity';
+import { OrderGateway } from './realtime/order.gateway';
+import { OrderRealtimePublisher } from './realtime/order-realtime.publisher';
 import { SellOrderController } from './sell-order.controller';
 import { SellOrderService } from './sell-order.service';
 
@@ -28,6 +31,7 @@ import { SellOrderService } from './sell-order.service';
       BuyOrderEntity,
       SellOrderEntity,
       SellOrderCoinLotEntity,
+      TradeRequestEntity,
     ]),
     AuthGuardsModule,
     CoinsModule,
@@ -46,7 +50,9 @@ import { SellOrderService } from './sell-order.service';
     SellOrderService,
     AdminOrderService,
     MatchingPolicyService,
+    OrderRealtimePublisher,
+    OrderGateway,
   ],
-  exports: [BuyOrderService, SellOrderService],
+  exports: [BuyOrderService, SellOrderService, OrderRealtimePublisher],
 })
 export class OrdersModule {}

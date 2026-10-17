@@ -113,6 +113,21 @@ export class RejectTradeRequestDto {
   reasonCode!: TradeRequestRejectionReason;
 }
 
+/** 판매자 수락 판단용 구매자 신뢰 요약 */
+export class TradeRequestBuyerSummaryDto {
+  @ApiProperty({ example: '테**' })
+  nicknameMasked!: string;
+
+  @ApiProperty({ description: 'COMPLETED 거래 수' })
+  completedTradeCount!: number;
+
+  @ApiProperty({
+    description:
+      '0~100. settled(COMPLETED+CANCELLED)=0이면 100, 아니면 floor(completed/settled*100)',
+  })
+  completionRate!: number;
+}
+
 export class TradeRequestResponseDto {
   @ApiProperty()
   id!: string;
@@ -141,9 +156,13 @@ export class TradeRequestResponseDto {
   })
   rejectionReasonCode!: TradeRequestRejectionReason | null;
 
+  @ApiProperty({ type: TradeRequestBuyerSummaryDto })
+  buyer!: TradeRequestBuyerSummaryDto;
+
   static from(
     request: TradeRequestEntity,
     tradeId: string | null,
+    buyer: TradeRequestBuyerSummaryDto,
   ): TradeRequestResponseDto {
     const dto = new TradeRequestResponseDto();
     dto.id = request.id;
@@ -157,6 +176,7 @@ export class TradeRequestResponseDto {
     dto.expiresAt = request.expiresAt;
     dto.tradeId = tradeId;
     dto.rejectionReasonCode = request.rejectionReasonCode;
+    dto.buyer = buyer;
     return dto;
   }
 }

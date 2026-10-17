@@ -13,6 +13,7 @@ import { MatchingPolicyEntity } from './infrastructure/entities/matching-policy.
 import { OrderNumberSequenceEntity } from './infrastructure/entities/order-number-sequence.entity';
 import { SellOrderCoinLotEntity } from './infrastructure/entities/sell-order-coin-lot.entity';
 import { SellOrderEntity } from './infrastructure/entities/sell-order.entity';
+import { OrderRealtimePublisher } from './realtime/order-realtime.publisher';
 import { SellOrderService } from './sell-order.service';
 import { BuyOrderService } from './buy-order.service';
 import { BuyOrderResponseDto } from './dto/buy-order-response.dto';
@@ -343,6 +344,15 @@ describe('P0-4 Buy/Sell Orders', () => {
         { provide: CoinService, useValue: coinService },
         { provide: UserService, useValue: userService },
         { provide: MatchingService, useValue: matchingService },
+        {
+          provide: OrderRealtimePublisher,
+          useValue: {
+            publishBuyOrder: jest.fn(),
+            publishSellOrder: jest.fn(),
+            publishTradeRequest: jest.fn(),
+            publishMatchingChanged: jest.fn(),
+          },
+        },
         {
           provide: getRepositoryToken(SellOrderEntity),
           useValue: sellOrderRepo,

@@ -34,6 +34,7 @@ import { OrderDomainException } from './exceptions/order.exceptions';
 import { MatchingPolicyEntity } from './infrastructure/entities/matching-policy.entity';
 import { SellOrderCoinLotEntity } from './infrastructure/entities/sell-order-coin-lot.entity';
 import { SellOrderEntity } from './infrastructure/entities/sell-order.entity';
+import { OrderRealtimePublisher } from './realtime/order-realtime.publisher';
 import { nextOrderNumber } from './utils/order-number.util';
 import { addAmount } from '../coins/utils/coin-amount.util';
 import { isPositiveAmountString } from '../coins/utils/coin-amount.util';
@@ -56,6 +57,7 @@ export class SellOrderService implements OnModuleInit {
     private readonly sellOrderCoinLotRepository: Repository<SellOrderCoinLotEntity>,
     @InjectRepository(MatchingPolicyEntity)
     private readonly matchingPolicyRepository: Repository<MatchingPolicyEntity>,
+    private readonly orderRealtime: OrderRealtimePublisher,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -91,7 +93,7 @@ export class SellOrderService implements OnModuleInit {
       throw OrderDomainException.invalidOrderAmount();
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const created = await this.dataSource.transaction(async (manager) => {
       const existing = await manager.getRepository(SellOrderEntity).findOne({
         where: {
           sellerUserId,
@@ -164,13 +166,16 @@ export class SellOrderService implements OnModuleInit {
 
       return SellOrderResponseDto.from(saved);
     });
+    this.orderRealtime.publishSellOrder(created.id);
+    this.orderRealtime.publishMatchingChanged();
+    return created;
   }
 
   async cancelSellOrder(
     sellerUserId: string,
     orderId: string,
   ): Promise<SellOrderResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    const cancelled = await this.dataSource.transaction(async (manager) => {
       const orderRepository = manager.getRepository(SellOrderEntity);
       const order = await orderRepository.findOne({
         where: { id: orderId, sellerUserId },
@@ -251,6 +256,9 @@ export class SellOrderService implements OnModuleInit {
       const saved = await orderRepository.save(order);
       return SellOrderResponseDto.from(saved);
     });
+    this.orderRealtime.publishSellOrder(orderId);
+    this.orderRealtime.publishMatchingChanged();
+    return cancelled;
   }
 
   async listMySellOrders(
