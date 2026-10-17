@@ -67,6 +67,12 @@ export class AdminUserOpsSnapshotDto {
   @ApiProperty({ example: 1 })
   lifetimeDisputes!: number;
 
+  @ApiProperty({ example: 1 })
+  cancelledTrades!: number;
+
+  @ApiProperty({ example: 0 })
+  forceCompletedDisputes!: number;
+
   @ApiProperty({ example: 2 })
   activeSessions!: number;
 

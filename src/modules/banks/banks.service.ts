@@ -18,6 +18,7 @@ import {
   BankResponseDto,
   BanksListResponseDto,
   PublicBankResponseDto,
+  publicBankIconUrl,
 } from './dto/bank-response.dto';
 import { CreateBankDto } from './dto/create-bank.dto';
 import { SearchAdminBanksDto } from './dto/search-admin-banks.dto';
@@ -51,6 +52,23 @@ export class BanksService {
     return this.bankRepository.findOne({
       where: { code },
     });
+  }
+
+  /** 거래 입금 지시 등 표시용 — 이름·아이콘 URL */
+  async resolveDisplayByCode(code: string): Promise<{
+    code: string;
+    name: string;
+    iconUrl: string | null;
+  }> {
+    const bank = await this.findByCode(code);
+    if (!bank) {
+      return { code, name: code, iconUrl: null };
+    }
+    return {
+      code: bank.code,
+      name: bank.name,
+      iconUrl: publicBankIconUrl(bank.svgFilename, this.assetPublicBaseUrl()),
+    };
   }
 
   async listActiveBanks(): Promise<BanksListResponseDto> {

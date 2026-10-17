@@ -1,6 +1,10 @@
 import { BankEntity } from '../infrastructure/entities/bank.entity';
 
-function publicBankIconUrl(svgFilename: string | null, assetBaseUrl: string): string | null {
+/** Nest ServeStatic(`/assets`)과 동일한 공개 은행 아이콘 URL */
+export function publicBankIconUrl(
+  svgFilename: string | null,
+  assetBaseUrl: string,
+): string | null {
   if (!svgFilename) {
     return null;
   }

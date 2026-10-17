@@ -22,10 +22,15 @@ import { CoinWalletResponseDto } from '../coins/dto/coin-response.dto';
 import { NotificationEventType } from '../notifications/domain/enums/notification-event-type.enum';
 import { NotificationReferenceType } from '../notifications/domain/enums/notification-reference-type.enum';
 import { NotificationService } from '../notifications/notification.service';
+import { TradeDisputeResolution } from '../trades/domain/enums/trade-dispute-resolution.enum';
 import { TradeDisputeStatus } from '../trades/domain/enums/trade-dispute-status.enum';
 import { TradeStatus } from '../trades/domain/enums/trade-status.enum';
 import { TradeDisputeEntity } from '../trades/infrastructure/entities/trade-dispute.entity';
 import { TradeEntity } from '../trades/infrastructure/entities/trade.entity';
+import {
+  summarizeAdminDisputeRows,
+  summarizeAdminTradeRows,
+} from './admin-ops-snapshot.util';
 import { ApprovalDecision } from './domain/enums/approval-decision.enum';
 import { BankAccountReviewDecision } from './domain/enums/bank-account-review-decision.enum';
 import { GenderCode } from './domain/enums/gender-code.enum';
@@ -1091,7 +1096,7 @@ export class UserService {
       throw UserAdminDomainException.notFound();
     }
 
-    const [wallet, bankAccount, tradeRows, disputeRows, activeSessions] =
+    const [wallet, bankAccount, tradeRows, disputeRows, forceCompletedDisputes, activeSessions] =
       await Promise.all([
         this.coinService.findWallet(userId),
         this.findLatestBankAccount(userId),
@@ -1123,6 +1128,19 @@ export class UserService {
           )
           .groupBy('dispute.status')
           .getRawMany<{ status: TradeDisputeStatus; count: string }>(),
+        // Inspector 강제 처리: resolution=FORCE_COMPLETE 건수 (status 집계와 별도)
+        this.dataSource
+          .getRepository(TradeDisputeEntity)
+          .createQueryBuilder('dispute')
+          .innerJoin('dispute.trade', 'trade')
+          .where(
+            'trade.buyer_user_id = :userId OR trade.seller_user_id = :userId',
+            { userId },
+          )
+          .andWhere('dispute.resolution = :resolution', {
+            resolution: TradeDisputeResolution.FORCE_COMPLETE,
+          })
+          .getCount(),
         this.authService.countActiveSessions(userId),
       ]);
 
@@ -1135,44 +1153,8 @@ export class UserService {
           lockedBalance: '0',
         };
 
-    const ongoingStatuses = new Set<TradeStatus>([
-      TradeStatus.WAITING_BUYER_PAYMENT,
-      TradeStatus.PAYMENT_TIMEOUT,
-      TradeStatus.WAITING_SELLER_CONFIRMATION,
-      TradeStatus.COIN_TRANSFERRING,
-    ]);
-    const openDisputeStatuses = new Set<TradeDisputeStatus>([
-      TradeDisputeStatus.OPEN_UNASSIGNED,
-      TradeDisputeStatus.ASSIGNED,
-      TradeDisputeStatus.IN_REVIEW,
-      TradeDisputeStatus.EVIDENCE_REQUIRED,
-    ]);
-
-    let lifetimeTrades = 0;
-    let ongoingTrades = 0;
-    let completedTrades = 0;
-    let ongoingPayment: bigint = 0n;
-    for (const row of tradeRows) {
-      const count = toCount(row.count);
-      lifetimeTrades += count;
-      if (ongoingStatuses.has(row.status)) {
-        ongoingTrades += count;
-        ongoingPayment += BigInt(row.paymentSum || '0');
-      }
-      if (row.status === TradeStatus.COMPLETED) {
-        completedTrades += count;
-      }
-    }
-
-    let lifetimeDisputes = 0;
-    let ongoingDisputes = 0;
-    for (const row of disputeRows) {
-      const count = toCount(row.count);
-      lifetimeDisputes += count;
-      if (openDisputeStatuses.has(row.status)) {
-        ongoingDisputes += count;
-      }
-    }
+    const tradeSummary = summarizeAdminTradeRows(tradeRows);
+    const disputeSummary = summarizeAdminDisputeRows(disputeRows);
 
     const bank = bankAccount
       ? await this.dataSource.getRepository(BankEntity).findOne({
@@ -1208,13 +1190,17 @@ export class UserService {
       availableCoin: walletDto.availableBalance,
       sellableCoin: walletDto.sellableBalance,
       lockedCoin: walletDto.lockedBalance,
-      ongoingTrades,
+      ongoingTrades: tradeSummary.ongoingTrades,
       ongoingTradeAmount:
-        ongoingTrades > 0 ? ongoingPayment.toString() : null,
-      lifetimeTrades,
-      completedTrades,
-      ongoingDisputes,
-      lifetimeDisputes,
+        tradeSummary.ongoingTrades > 0
+          ? tradeSummary.ongoingPayment.toString()
+          : null,
+      lifetimeTrades: tradeSummary.lifetimeTrades,
+      completedTrades: tradeSummary.completedTrades,
+      cancelledTrades: tradeSummary.cancelledTrades,
+      forceCompletedDisputes,
+      ongoingDisputes: disputeSummary.ongoingDisputes,
+      lifetimeDisputes: disputeSummary.lifetimeDisputes,
       activeSessions,
       needsPinUnlock: false,
       bankName: bank?.name ?? null,
@@ -1492,11 +1478,6 @@ function maskResidentRegistrationNumber(rrn: string): string {
     return '*******';
   }
   return `${digits.slice(0, 6)}*******`;
-}
-
-function toCount(value: string | number | null | undefined): number {
-  const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
 }
 
 function mapWalletStatus(

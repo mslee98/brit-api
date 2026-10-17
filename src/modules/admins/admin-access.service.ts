@@ -26,4 +26,16 @@ export class AdminAccessService {
       throw AdminDomainException.forbidden();
     }
   }
+
+  async assertActiveAdmin(userId: string): Promise<void> {
+    const profile = await this.adminProfileRepository.findOne({
+      where: { userId },
+    });
+    if (!profile) {
+      throw AdminDomainException.adminNotFound();
+    }
+    if (!profile.isActive) {
+      throw AdminDomainException.adminProfileInactive();
+    }
+  }
 }
