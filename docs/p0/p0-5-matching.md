@@ -31,6 +31,8 @@ BuyOrder MATCHING
 | Trade 생성 | `trade.service.ts` `createMatchedTradeInTransaction` |
 | 예외 | `matching/exceptions/matching.exceptions.ts` |
 
+실시간 신호는 [p0-4-orders.md](./p0-4-orders.md) `/orders`. 후보 폴링은 없다. `matching.changed`는 판매 잔량이 실제로 바뀐 뒤에만 보낸다. Request TTL 만료는 `EXPIRED`로 저장됐을 때만 발행하고, 이미 수락됐거나 아직 기한 전인 no-op은 보내지 않는다. 매칭 대기는 `buy-order:{id}`에 join하고, 진입 시 candidates GET을 한 번 친 뒤 `matching.changed`가 오면 짧게 모아 다시 한 번 친다. 신청 상태는 `trade-request.updated` 뒤 request GET.
+
 ## API
 
 | Method | Path | 설명 |
@@ -73,7 +75,7 @@ BuyOrder MATCHING
 ## 주의
 
 1. Market API와 candidates를 합치지 말 것.
-2. 프론트는 candidates 2.5s 폴링 + match. Socket/SSE 불필요 (P0).
+2. 프론트는 진입 시 candidates GET 한 번, 이후 `matching.changed`만 다시 조회한다. 받은 후보는 바로 목록에 넣고, 새로 생긴 판매자만 이어서 보여 준다. 확인 시트는 행을 눌렀을 때만 연다. 2.5초 폴링과 1.5초 순차 공개는 쓰지 않는다.
 3. auto_match fallback은 P0 제외.
 
 ## 다음 (제안 · M0 확정)

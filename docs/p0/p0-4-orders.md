@@ -22,8 +22,21 @@ ACTIVE + ACTIVE 계좌
 | 번호 | `utils/order-number.util.ts` (`BO`/`SO`/`TO`/`TD`) |
 | 상태 계산 | `utils/sell-order-status.util.ts` |
 | 예외 | `exceptions/order.exceptions.ts` |
+| 주문 소켓 | `realtime/order.gateway.ts` (`/orders`) |
+| 발행 | `realtime/order-realtime.publisher.ts` |
 
 Buy 생성은 `MATCHING` 주문만 반환한다. 즉시 매칭하지 않는다.
+
+## 실시간
+
+쓰기는 REST. emit은 커밋 뒤. payload는 id와 status만.
+
+- `buy-order.updated`: 구매 생성·취소·매칭 상태 변경
+- `sell-order.updated`: 판매 생성·취소·잔량 변경
+- `trade-request.updated`: 신청 생성·수락·거절·취소·만료. 구매·판매 신호도 같이 보낸다
+- `matching.changed`: 판매 잔량이 바뀐 뒤, 현재 `MATCHING` 구매의 `buy-order:{id}` 방
+
+연결 시 `user:{userId}` join. 매칭 대기만 `buy-order.join` / `leave`. Trades는 이 이벤트를 보내지 않는다. 거래 완료로 주문이 바뀌면 프론트가 `trade.updated`로 주문 GET을 다시 친다.
 
 ## API (`/v1`)
 
@@ -75,6 +88,6 @@ Buy 취소: `MATCHING`만. 이미 `MATCHED`면 `ORDER_ALREADY_MATCHED` → Trade
 
 ## 주의
 
-1. Buy 생성 응답은 주문만 반환한다. 프론트는 candidates 폴링 후 match.
+1. Buy 생성 응답은 주문만 반환한다. 후보 갱신은 `matching.changed` 뒤 candidates GET.
 2. `GET /market/sell-orders`는 거래소 browse. Buy 후보와 역할이 다르다.
 3. 활성 `matching_policies` 기본: 최소 분할 20%, Near ±10% (`near_match_max_ratio_bps=1000`), 입금 300s, 판매자 확인 180s.

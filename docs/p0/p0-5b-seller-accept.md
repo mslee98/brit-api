@@ -24,8 +24,19 @@ Push: 기존 `notification_events` / `notification_recipients` + 신규 `user_pu
 | POST | `/trade-requests/:id/accept` | 멱등: 기존 tradeId |
 | POST | `/trade-requests/:id/reject` | `reasonCode` |
 | POST | `/trade-requests/:id/cancel` | 구매자 |
-| GET | `/trade-requests/:id` | JOIN으로 tradeId |
+| GET | `/trade-requests/:id` | JOIN으로 tradeId + `buyer` 요약 |
+| GET | `/sell-orders/:id/pending-request` | 판매자 pending 1건 + `buyer` 요약 |
 | GET | `/buy-orders/:id/candidates` | `MATCHING`만. `REQUEST_PENDING` → 409 |
+
+### TradeRequest `buyer` 요약
+
+판매자 수락 UI용. `pending-request` / `GET trade-requests/:id` / reject·cancel 응답에 포함.
+
+| 필드 | 의미 |
+|------|------|
+| `nicknameMasked` | `maskNickname(profile.nickname)` |
+| `completedTradeCount` | buyer의 `COMPLETED` trade 수 |
+| `completionRate` | `settled=COMPLETED+CANCELLED`; 0이면 100, else `floor(completed/settled*100)` |
 
 ## 스키마·런타임
 
@@ -40,3 +51,5 @@ Push: 기존 `notification_events` / `notification_recipients` + 신규 `user_pu
 
 **M5~M6 Front UX**, **M7 Push Outbox**. curl E2E 후 Front 착수.  
 p0-5-matching 전면 개정·`/match` deprecate는 M10.
+
+Front(1인 1활성): `FULLY_RESERVED` enum/API 변경 없음. 활성 Sell 조회에 상태만 포함해 pending Sheet·홈 Entry를 유지한다. 상세는 trade-seller-accept-flow §18.

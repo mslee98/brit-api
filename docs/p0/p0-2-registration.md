@@ -47,6 +47,7 @@ register (PENDING, 토큰 없음)
 | POST | `/admin/registration-reviews/:userId/approve` | 체크리스트 필수 |
 | POST | `/admin/registration-reviews/:userId/reject` | reason 필수 |
 | GET/POST | `/admin/users`, `.../suspend\|unsuspend\|withdraw` | 운영 |
+| GET | `/admin/users/:userId/ops-snapshot` | Coin·거래·분쟁 요약. `cancelledTrades`(status=CANCELLED), `forceCompletedDisputes`(resolution=FORCE_COMPLETE) |
 
 알림 (관리자 인박스): `GET/PATCH /admin/notifications…`
 

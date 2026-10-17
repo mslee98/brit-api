@@ -18,7 +18,9 @@ alwaysApply: true
 | 판매자 수락 (M0 요약) | `docs/p0/p0-5b-seller-accept.md` |
 | **P0-5b M1~M4 구현 계획** | `docs/p0/p0-5b-m1-m4-plan.md` — Apply→Accept 백엔드 뼈대. 구현 전·중에는 이 문서를 따른다 |
 | Trade 진행 | `docs/p0/p0-6-trade.md` |
+| **분쟁 (P0-7 M1~M3)** | `docs/p0/p0-7-disputes.md` |
 | 관리자 기반 | `docs/p0/p0-admin-foundation.md` |
 
 문서와 코드가 다르면 **코드를 따르고** 불일치를 표시한다.  
-P0-5b(Apply/Accept) 작업 시: 정책은 front `trade-seller-accept-flow.md`, **TX·순서·범위는 `p0-5b-m1-m4-plan.md`**. 다음 예정 중 하나는 P0-7 분쟁 Workbench다.
+P0-5b(Apply/Accept) 작업 시: 정책은 front `trade-seller-accept-flow.md`, **TX·순서·범위는 `p0-5b-m1-m4-plan.md`**.  
+분쟁 작업 시: 정책 UX는 front `trade-disputes.md`, **구현 SoT는 `p0-7-disputes.md`**. 증빙·매크로는 M4. 소켓은 REST 안정 후.
