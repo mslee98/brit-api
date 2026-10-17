@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import { TradeDisputeStatus } from '../domain/enums/trade-dispute-status.enum';
 import { TradeStatus } from '../domain/enums/trade-status.enum';
 
 export enum TradeViewerRole {
@@ -10,6 +11,9 @@ export enum TradeViewerRole {
 export class TradeActionsDto {
   @ApiProperty()
   canReportPayment!: boolean;
+
+  @ApiProperty()
+  canWithdrawPaymentReport!: boolean;
 
   @ApiProperty()
   canConfirmPayment!: boolean;
@@ -33,12 +37,24 @@ export class TradeActionsDto {
   canMarkUnpaid!: boolean;
 
   @ApiProperty()
+  canDenyPayment!: boolean;
+
+  @ApiProperty()
   canOpenDispute!: boolean;
 }
 
 export class TradePaymentDto {
+  @ApiProperty({ description: 'banks.code' })
+  bankCode!: string;
+
   @ApiProperty()
   bankName!: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: '은행 로고 공개 URL (/assets/banks/...)',
+  })
+  iconUrl!: string | null;
 
   @ApiProperty()
   accountNumber!: string;
@@ -53,6 +69,17 @@ export class TradePaymentDto {
 export class TradeCounterpartyDto {
   @ApiProperty()
   nickname!: string;
+}
+
+export class TradeDisputeSummaryDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty({ enum: TradeDisputeStatus })
+  status!: TradeDisputeStatus;
+
+  @ApiProperty()
+  canChat!: boolean;
 }
 
 export class TradeResponseDto {
@@ -80,6 +107,9 @@ export class TradeResponseDto {
   @ApiPropertyOptional({ type: TradeCounterpartyDto })
   counterparty?: TradeCounterpartyDto;
 
+  @ApiPropertyOptional({ type: TradeDisputeSummaryDto, nullable: true })
+  dispute!: TradeDisputeSummaryDto | null;
+
   @ApiProperty({ type: TradeActionsDto })
   actions!: TradeActionsDto;
 
@@ -92,6 +122,12 @@ export class TradeResponseDto {
   @ApiProperty()
   createdAt!: Date;
 
+  @ApiPropertyOptional({ nullable: true })
+  cancelledAt!: Date | null;
+
+  @ApiPropertyOptional({ nullable: true, description: '취소 사유 원문' })
+  cancellationReason!: string | null;
+
   @ApiPropertyOptional()
   alreadyReported?: boolean;
 
@@ -100,6 +136,9 @@ export class TradeResponseDto {
 
   @ApiPropertyOptional()
   alreadyCancelled?: boolean;
+
+  @ApiPropertyOptional()
+  alreadyDisputed?: boolean;
 }
 
 export class TradeListItemDto {
@@ -120,4 +159,7 @@ export class TradeListItemDto {
 
   @ApiProperty()
   createdAt!: Date;
+
+  @ApiPropertyOptional({ type: TradeDisputeSummaryDto, nullable: true })
+  dispute!: TradeDisputeSummaryDto | null;
 }

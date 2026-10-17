@@ -29,6 +29,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/domain/enums/user-role.enum';
 import {
   AdminOpenDisputeDto,
+  AdminResolveDisputeDto,
   AdminTradeReasonDto,
 } from './dto/admin-trade-command.dto';
 import {
@@ -143,6 +144,25 @@ export class AdminTradesController {
     @Req() req: Request,
   ): Promise<AdminTradeDetailDto> {
     return this.tradeService.openDispute(
+      user.userId,
+      tradeId,
+      dto,
+      resolveClientIp(req),
+    );
+  }
+
+  @Post(':tradeId/resolve-dispute')
+  @HttpCode(200)
+  @ApiOperation({ summary: '분쟁 판결 (강제완료·강제취소·재개)' })
+  @ApiOkResponse({ type: AdminTradeDetailDto })
+  async resolveDispute(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('tradeId', ParseUUIDPipe) tradeId: string,
+    @Body() dto: AdminResolveDisputeDto,
+    @Req() req: Request,
+  ): Promise<AdminTradeDetailDto> {
+    await this.adminAccessService.assertIsLeaderOrSysAdmin(user);
+    return this.tradeService.resolveDispute(
       user.userId,
       tradeId,
       dto,

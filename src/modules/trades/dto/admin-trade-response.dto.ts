@@ -120,6 +120,12 @@ export class AdminTradeDisputeDto {
 
   @ApiProperty()
   requestedAt!: Date;
+
+  @ApiPropertyOptional({ nullable: true })
+  assignedAdminUserId!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  assignedAt!: Date | null;
 }
 
 export class AdminTradeDetailDto {

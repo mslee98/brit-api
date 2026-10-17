@@ -97,6 +97,16 @@ export const NOTIFICATION_POLICY: Record<
     title: '입금 확인이 필요해요',
     body: '구매자가 입금했다고 했어요',
   },
+  [NotificationEventType.TRADE_PAYMENT_REPORT_WITHDRAWN]: {
+    eventType: NotificationEventType.TRADE_PAYMENT_REPORT_WITHDRAWN,
+    recipientRole: 'SELLER',
+    inApp: true,
+    push: true,
+    priority: NotificationPriority.HIGH,
+    ttlSeconds: 86_400,
+    title: '입금 신고가 취소됐어요',
+    body: '구매자가 입금 신고를 취소했어요',
+  },
   [NotificationEventType.TRADE_COMPLETED]: {
     eventType: NotificationEventType.TRADE_COMPLETED,
     recipientRole: 'BOTH',
@@ -161,7 +171,7 @@ export const NOTIFICATION_POLICY: Record<
     priority: NotificationPriority.URGENT,
     ttlSeconds: 86_400,
     title: '분쟁이 접수됐어요',
-    body: '운영팀이 확인 중이에요',
+    body: '상담 대화로 이동해요',
   },
   [NotificationEventType.DISPUTE_RESOLVED]: {
     eventType: NotificationEventType.DISPUTE_RESOLVED,

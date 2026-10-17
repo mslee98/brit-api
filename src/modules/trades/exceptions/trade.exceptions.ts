@@ -97,4 +97,60 @@ export class TradeDomainException {
       message: '이미 분쟁이 열린 거래예요.',
     });
   }
+
+  static onlySellerCanDenyPayment(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'TRADE_ONLY_SELLER_CAN_DENY_PAYMENT',
+      message: '입금 미수신 신고는 판매자만 할 수 있어요.',
+    });
+  }
+
+  static onlyBuyerCanOpenDispute(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'TRADE_ONLY_BUYER_CAN_OPEN_DISPUTE',
+      message: '분쟁 제기는 구매자만 할 수 있어요.',
+    });
+  }
+
+  static disputeNotFound(): NotFoundException {
+    return new NotFoundException({
+      code: 'TRADE_DISPUTE_NOT_FOUND',
+      message: '분쟁을 찾을 수 없어요.',
+    });
+  }
+
+  static disputeAlreadyResolved(): ConflictException {
+    return new ConflictException({
+      code: 'TRADE_DISPUTE_ALREADY_RESOLVED',
+      message: '이미 처리된 분쟁이에요.',
+    });
+  }
+
+  static disputeAlreadyAssigned(): ConflictException {
+    return new ConflictException({
+      code: 'DISPUTE_ALREADY_ASSIGNED',
+      message: '이미 담당자가 배정된 분쟁이에요.',
+    });
+  }
+
+  static disputeClosed(): ConflictException {
+    return new ConflictException({
+      code: 'TRADE_DISPUTE_CLOSED',
+      message: '종료된 분쟁에는 메시지를 보낼 수 없어요.',
+    });
+  }
+
+  static disputeNotAssigned(): ConflictException {
+    return new ConflictException({
+      code: 'TRADE_DISPUTE_NOT_ASSIGNED',
+      message: '담당자가 배정된 뒤에 메시지를 보낼 수 있어요.',
+    });
+  }
+
+  static withdrawWindowExpired(): ConflictException {
+    return new ConflictException({
+      code: 'TRADE_WITHDRAW_WINDOW_EXPIRED',
+      message: '입금 신고 취소 가능 시간이 지났어요.',
+    });
+  }
 }

@@ -24,13 +24,19 @@ import { SellOrderCoinLotEntity } from '../orders/infrastructure/entities/sell-o
 import { SellOrderEntity } from '../orders/infrastructure/entities/sell-order.entity';
 import { UserEntity } from '../users/infrastructure/entities/user.entity';
 import { UserService } from '../users/user.service';
+import { TradeDisputeReasonCode } from './domain/enums/trade-dispute-reason-code.enum';
+import { TradeDisputeStatus } from './domain/enums/trade-dispute-status.enum';
 import { TradeEventActorType } from './domain/enums/trade-event-actor-type.enum';
 import { TradeEventCode } from './domain/enums/trade-event-code.enum';
 import { TradeStatus } from './domain/enums/trade-status.enum';
 import { TradeCoinLotEntity } from './infrastructure/entities/trade-coin-lot.entity';
+import { TradeDisputeActionEntity } from './infrastructure/entities/trade-dispute-action.entity';
 import { TradeDisputeEntity } from './infrastructure/entities/trade-dispute.entity';
 import { TradeEventEntity } from './infrastructure/entities/trade-event.entity';
 import { TradeEntity } from './infrastructure/entities/trade.entity';
+import { DisputeRealtimePublisher } from './realtime/dispute-realtime.publisher';
+import { TradeRealtimePublisher } from './realtime/trade-realtime.publisher';
+import { DisputeEvidenceStorage } from './dispute-evidence.storage';
 import { TradeService } from './trade.service';
 
 const BUYER_ID = 'buyer-1';
@@ -45,6 +51,7 @@ type Store = {
   events: TradeEventEntity[];
   tradeLots: Map<string, TradeCoinLotEntity>;
   disputes: Map<string, TradeDisputeEntity>;
+  actions: TradeDisputeActionEntity[];
   buyOrders: Map<string, BuyOrderEntity>;
   sellOrders: Map<string, SellOrderEntity>;
   matchingPolicies: Map<string, MatchingPolicyEntity>;
@@ -65,6 +72,7 @@ function createStore(): Store {
     events: [],
     tradeLots: new Map(),
     disputes: new Map(),
+    actions: [],
     buyOrders: new Map(),
     sellOrders: new Map(),
     matchingPolicies: new Map(),
@@ -295,6 +303,48 @@ function makeManager(store: Store): EntityManager {
     },
   });
 
+  const getActionRepo = () => ({
+    create: (data: Partial<TradeDisputeActionEntity>) =>
+      ({
+        id: `act-${store.actions.length + 1}`,
+        createdAt: new Date(),
+        ...data,
+      }) as TradeDisputeActionEntity,
+    save: async (row: TradeDisputeActionEntity) => {
+      const saved = {
+        ...row,
+        id: row.id ?? `act-${store.actions.length + 1}`,
+        createdAt: row.createdAt ?? new Date(),
+      };
+      const idx = store.actions.findIndex((item) => item.id === saved.id);
+      if (idx >= 0) {
+        store.actions[idx] = saved;
+      } else {
+        store.actions.push(saved);
+      }
+      return saved;
+    },
+    findAndCount: async ({
+      where,
+      skip = 0,
+      take,
+    }: {
+      where: { disputeId: string; isInternal?: boolean };
+      skip?: number;
+      take?: number;
+    }) => {
+      let rows = store.actions.filter(
+        (action) => action.disputeId === where.disputeId,
+      );
+      if (where.isInternal === false) {
+        rows = rows.filter((action) => action.isInternal === false);
+      }
+      const total = rows.length;
+      const sliced = take ? rows.slice(skip, skip + take) : rows.slice(skip);
+      return [sliced.map((row) => ({ ...row })), total];
+    },
+  });
+
   return {
     getRepository: (entity: unknown) => {
       if (entity === TradeEntity) {
@@ -323,10 +373,16 @@ function makeManager(store: Store): EntityManager {
       }
       if (entity === TradeDisputeEntity) {
         return {
-          findOne: async ({ where }: { where: { tradeId: string } }) => {
-            const found = [...store.disputes.values()].find(
-              (row) => row.tradeId === where.tradeId,
-            );
+          findOne: async ({
+            where,
+          }: {
+            where: { tradeId?: string; id?: string };
+          }) => {
+            const found = where.id
+              ? store.disputes.get(where.id)
+              : [...store.disputes.values()].find(
+                  (row) => row.tradeId === where.tradeId,
+                );
             return found ? { ...found } : null;
           },
           create: (data: Partial<TradeDisputeEntity>) =>
@@ -339,6 +395,9 @@ function makeManager(store: Store): EntityManager {
             return { ...row };
           },
         };
+      }
+      if (entity === TradeDisputeActionEntity) {
+        return getActionRepo();
       }
       if (entity === BuyOrderEntity) {
         return {
@@ -564,6 +623,68 @@ describe('P0-6 TradeService', () => {
         [...store.trades.values()].map((row) => ({ ...row })),
         store.trades.size,
       ],
+      createQueryBuilder: () => {
+        const filters: {
+          partyUserId?: string;
+          buyerUserId?: string;
+          sellerUserId?: string;
+          status?: string;
+          skip: number;
+          take: number;
+        } = { skip: 0, take: 20 };
+        const qb = {
+          andWhere: (_sql: string, params?: Record<string, unknown>) => {
+            if (params?.partyUserId) {
+              filters.partyUserId = String(params.partyUserId);
+            }
+            if (params?.buyerUserId) {
+              filters.buyerUserId = String(params.buyerUserId);
+            }
+            if (params?.sellerUserId) {
+              filters.sellerUserId = String(params.sellerUserId);
+            }
+            if (params?.status) {
+              filters.status = String(params.status);
+            }
+            return qb;
+          },
+          orderBy: () => qb,
+          skip: (n: number) => {
+            filters.skip = n;
+            return qb;
+          },
+          take: (n: number) => {
+            filters.take = n;
+            return qb;
+          },
+          getManyAndCount: async () => {
+            let rows = [...store.trades.values()].map((row) => ({ ...row }));
+            if (filters.status) {
+              rows = rows.filter((row) => row.status === filters.status);
+            }
+            if (filters.buyerUserId) {
+              rows = rows.filter(
+                (row) => row.buyerUserId === filters.buyerUserId,
+              );
+            }
+            if (filters.sellerUserId) {
+              rows = rows.filter(
+                (row) => row.sellerUserId === filters.sellerUserId,
+              );
+            }
+            if (filters.partyUserId) {
+              rows = rows.filter(
+                (row) =>
+                  row.buyerUserId === filters.partyUserId ||
+                  row.sellerUserId === filters.partyUserId,
+              );
+            }
+            const sliced = rows.slice(filters.skip, filters.skip + filters.take);
+            return [sliced, rows.length];
+          },
+        };
+        return qb;
+      },
     };
     const eventRepo = {
       find: async ({ where }: { where: { tradeId: string } }) =>
@@ -578,11 +699,95 @@ describe('P0-6 TradeService', () => {
           .map((lot) => ({ ...lot })),
     };
     const disputeRepo = {
-      findOne: async ({ where }: { where: { tradeId: string } }) => {
-        const found = [...store.disputes.values()].find(
-          (row) => row.tradeId === where.tradeId,
-        );
-        return found ? { ...found } : null;
+      findOne: async ({
+        where,
+      }: {
+        where: { tradeId?: string; id?: string };
+      }) => {
+        const found = where.id
+          ? store.disputes.get(where.id)
+          : [...store.disputes.values()].find(
+              (row) => row.tradeId === where.tradeId,
+            );
+        if (!found) {
+          return null;
+        }
+        const trade = store.trades.get(found.tradeId);
+        return { ...found, trade: trade ? { ...trade } : undefined };
+      },
+      createQueryBuilder: () => {
+        const filters: {
+          status?: string;
+          openStatuses?: string[];
+          assigneeNull?: boolean;
+          assigneeId?: string;
+          partyUserId?: string;
+          skip: number;
+          take: number;
+        } = { skip: 0, take: 20 };
+        const qb = {
+          innerJoinAndSelect: () => qb,
+          andWhere: (sql: string, params?: Record<string, unknown>) => {
+            if (params?.status) {
+              filters.status = String(params.status);
+            }
+            if (params?.openStatuses) {
+              filters.openStatuses = params.openStatuses as string[];
+            }
+            if (params?.assigneeId) {
+              filters.assigneeId = String(params.assigneeId);
+            }
+            if (params?.partyUserId) {
+              filters.partyUserId = String(params.partyUserId);
+            }
+            if (sql.includes('IS NULL')) {
+              filters.assigneeNull = true;
+            }
+            return qb;
+          },
+          orderBy: () => qb,
+          skip: (n: number) => {
+            filters.skip = n;
+            return qb;
+          },
+          take: (n: number) => {
+            filters.take = n;
+            return qb;
+          },
+          getManyAndCount: async () => {
+            let rows = [...store.disputes.values()].map((row) => {
+              const trade = store.trades.get(row.tradeId);
+              return { ...row, trade: trade ? { ...trade } : undefined };
+            });
+            if (filters.status) {
+              rows = rows.filter((row) => row.status === filters.status);
+            } else if (filters.openStatuses) {
+              rows = rows.filter((row) =>
+                filters.openStatuses!.includes(row.status),
+              );
+            }
+            if (filters.assigneeNull) {
+              rows = rows.filter((row) => row.assignedAdminUserId == null);
+            }
+            if (filters.assigneeId) {
+              rows = rows.filter(
+                (row) => row.assignedAdminUserId === filters.assigneeId,
+              );
+            }
+            if (filters.partyUserId) {
+              rows = rows.filter((row) => {
+                const trade = row.trade as TradeEntity | undefined;
+                return (
+                  trade?.buyerUserId === filters.partyUserId ||
+                  trade?.sellerUserId === filters.partyUserId
+                );
+              });
+            }
+            const sliced = rows.slice(filters.skip, filters.skip + filters.take);
+            return [sliced, rows.length];
+          },
+        };
+        return qb;
       },
     };
 
@@ -595,6 +800,30 @@ describe('P0-6 TradeService', () => {
           provide: NotificationService,
           useValue: {
             enqueueTradePushInTransaction: jest.fn(async () => undefined),
+          },
+        },
+        {
+          provide: DisputeRealtimePublisher,
+          useValue: {
+            publishMessageCreated: jest.fn(async () => undefined),
+            publishDisputeOpened: jest.fn(),
+            publishDisputeUpdated: jest.fn(),
+            publishDisputeResolved: jest.fn(),
+            attach: jest.fn(),
+          },
+        },
+        {
+          provide: TradeRealtimePublisher,
+          useValue: { publishUpdated: jest.fn(), attach: jest.fn() },
+        },
+        {
+          provide: DisputeEvidenceStorage,
+          useValue: {
+            saveDisputeImage: jest.fn(async () => ({
+              url: '/assets/disputes/x/y.jpg',
+              mimeType: 'image/jpeg',
+              originalName: 'y.jpg',
+            })),
           },
         },
         {
@@ -624,7 +853,16 @@ describe('P0-6 TradeService', () => {
         {
           provide: BanksService,
           useValue: {
-            findByCode: jest.fn(async () => ({ name: '신한은행' })),
+            findByCode: jest.fn(async () => ({
+              code: '088',
+              name: '신한은행',
+              svgFilename: 'icn-bank-shinhan.svg',
+            })),
+            resolveDisplayByCode: jest.fn(async (code: string) => ({
+              code,
+              name: '신한은행',
+              iconUrl: '/assets/banks/icn-bank-shinhan.svg',
+            })),
           },
         },
         { provide: getRepositoryToken(TradeEntity), useValue: tradeRepo },
@@ -636,6 +874,32 @@ describe('P0-6 TradeService', () => {
         {
           provide: getRepositoryToken(TradeDisputeEntity),
           useValue: disputeRepo,
+        },
+        {
+          provide: getRepositoryToken(TradeDisputeActionEntity),
+          useValue: {
+            findAndCount: async ({
+              where,
+              skip = 0,
+              take,
+            }: {
+              where: { disputeId: string; isInternal?: boolean };
+              skip?: number;
+              take?: number;
+            }) => {
+              let rows = store.actions.filter(
+                (action) => action.disputeId === where.disputeId,
+              );
+              if (where.isInternal === false) {
+                rows = rows.filter((action) => action.isInternal === false);
+              }
+              const total = rows.length;
+              const sliced = take
+                ? rows.slice(skip, skip + take)
+                : rows.slice(skip);
+              return [sliced.map((row) => ({ ...row })), total];
+            },
+          },
         },
         {
           provide: getRepositoryToken(MatchingPolicyEntity),
@@ -667,6 +931,8 @@ describe('P0-6 TradeService', () => {
     expect(reported.status).toBe(TradeStatus.WAITING_SELLER_CONFIRMATION);
     expect(reported.alreadyReported).toBe(false);
     expect(reported.payment?.bankName).toBe('신한은행');
+    expect(reported.payment?.bankCode).toBe('088');
+    expect(reported.payment?.iconUrl).toBe('/assets/banks/icn-bank-shinhan.svg');
     expect(reported.actions.canConfirmPayment).toBe(false);
 
     const confirmed = await service.confirmPayment(SELLER_ID, TRADE_ID);
@@ -886,7 +1152,7 @@ describe('P0-6 TradeService', () => {
 
   it('admin open-dispute → DISPUTED + dispute row', async () => {
     const result = await service.openDispute('admin-1', TRADE_ID, {
-      reasonCode: 'PAYMENT_CONFIRMATION_REQUIRED',
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
       reason: '확인 불일치',
     });
     expect(result.status).toBe(TradeStatus.DISPUTED);
@@ -900,14 +1166,295 @@ describe('P0-6 TradeService', () => {
 
   it('admin open-dispute 중복 → 409', async () => {
     await service.openDispute('admin-1', TRADE_ID, {
-      reasonCode: 'PAYMENT_CONFIRMATION_REQUIRED',
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
       reason: '1차',
     });
     await expect(
       service.openDispute('admin-1', TRADE_ID, {
-        reasonCode: 'PAYMENT_CONFIRMATION_REQUIRED',
+        reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
         reason: '2차',
       }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('미배정 분쟁 본인 assign → ASSIGNED', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    const result = await service.assignDispute(
+      'admin-1',
+      disputeId,
+      'admin-1',
+    );
+    expect(result.status).toBe(TradeDisputeStatus.ASSIGNED);
+    expect(result.assignedAdminUserId).toBe('admin-1');
+    expect(store.disputes.get(disputeId)?.status).toBe(
+      TradeDisputeStatus.ASSIGNED,
+    );
+    expect(
+      store.events.some(
+        (event) => event.eventCode === TradeEventCode.DISPUTE_ASSIGNED,
+      ),
+    ).toBe(true);
+  });
+
+  it('이미 배정된 분쟁 assign → 409', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await service.assignDispute('admin-1', disputeId, 'admin-1');
+    await expect(
+      service.assignDispute('admin-2', disputeId, 'admin-2'),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('리더 takeover → 담당자 교체', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await service.assignDispute('admin-1', disputeId, 'admin-1');
+    const result = await service.takeoverDispute('leader-1', disputeId);
+    expect(result.assignedAdminUserId).toBe('leader-1');
+    expect(result.status).toBe(TradeDisputeStatus.ASSIGNED);
+  });
+
+  it('리더 takeover 동일 담당자 → 멱등', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await service.takeoverDispute('leader-1', disputeId);
+    const assignedEvents = store.events.filter(
+      (event) => event.eventCode === TradeEventCode.DISPUTE_ASSIGNED,
+    ).length;
+    await service.takeoverDispute('leader-1', disputeId);
+    expect(
+      store.events.filter(
+        (event) => event.eventCode === TradeEventCode.DISPUTE_ASSIGNED,
+      ).length,
+    ).toBe(assignedEvents);
+    expect(store.disputes.get(disputeId)?.assignedAdminUserId).toBe('leader-1');
+  });
+
+  it('열린 분쟁 목록 assignee=unassigned', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const unassigned = await service.listAdminDisputes(
+      { assignee: 'unassigned', page: 1, size: 20 },
+      'admin-1',
+    );
+    expect(unassigned.items).toHaveLength(1);
+    expect(unassigned.items[0].assignedAdminUserId).toBeNull();
+
+    const disputeId = unassigned.items[0].id;
+    await service.assignDispute('admin-1', disputeId, 'admin-1');
+    const after = await service.listAdminDisputes(
+      { assignee: 'unassigned', page: 1, size: 20 },
+      'admin-1',
+    );
+    expect(after.items).toHaveLength(0);
+
+    const mine = await service.listAdminDisputes(
+      { assignee: 'me', page: 1, size: 20 },
+      'admin-1',
+    );
+    expect(mine.items).toHaveLength(1);
+    expect(mine.items[0].assignedAdminUserId).toBe('admin-1');
+  });
+
+  it('거래 목록 partyUserId는 구매자·판매자 OR 필터', async () => {
+    const buyerRows = await service.listAdminTrades({
+      partyUserId: BUYER_ID,
+      page: 1,
+      size: 20,
+    });
+    expect(buyerRows.items).toHaveLength(1);
+    expect(buyerRows.items[0].buyer.userId).toBe(BUYER_ID);
+
+    const unknown = await service.listAdminTrades({
+      partyUserId: '00000000-0000-4000-8000-000000000099',
+      page: 1,
+      size: 20,
+    });
+    expect(unknown.items).toHaveLength(0);
+  });
+
+  it('분쟁 목록 partyUserId는 구매자·판매자 OR 필터', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const buyerRows = await service.listAdminDisputes(
+      { partyUserId: BUYER_ID, page: 1, size: 20 },
+      'admin-1',
+    );
+    expect(buyerRows.items).toHaveLength(1);
+    expect(buyerRows.items[0].buyer.userId).toBe(BUYER_ID);
+
+    const unknown = await service.listAdminDisputes(
+      { partyUserId: '00000000-0000-4000-8000-000000000099', page: 1, size: 20 },
+      'admin-1',
+    );
+    expect(unknown.items).toHaveLength(0);
+  });
+
+  it('당사자는 배정 전에도 메시지를 보낼 수 있다', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    const posted = await service.postPartyDisputeMessage(
+      BUYER_ID,
+      disputeId,
+      '입금했어요',
+    );
+    expect(posted.isMine).toBe(true);
+    expect(posted.body).toBe('입금했어요');
+    expect(posted.actorRole).toBe(TradeEventActorType.BUYER);
+    const listed = await service.listPartyDisputeMessages(
+      SELLER_ID,
+      disputeId,
+      { page: 1, size: 20 },
+    );
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0].isMine).toBe(false);
+  });
+
+  it('비당사자는 분쟁 메시지에 접근할 수 없다', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await expect(
+      service.postPartyDisputeMessage('outsider', disputeId, 'hello'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('내부메모는 사용자 목록에서 숨긴다', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await service.postAdminDisputeMessage(
+      'admin-1',
+      disputeId,
+      '내부 확인',
+      true,
+    );
+    const party = await service.listPartyDisputeMessages(BUYER_ID, disputeId, {
+      page: 1,
+      size: 20,
+    });
+    expect(party.items).toHaveLength(0);
+    const admin = await service.listAdminDisputeMessages(disputeId, {
+      page: 1,
+      size: 20,
+    });
+    expect(admin.items).toHaveLength(1);
+    expect(admin.items[0].isInternal).toBe(true);
+  });
+
+  it('종료된 분쟁 쓰기는 409', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    store.disputes.get(disputeId)!.status = TradeDisputeStatus.RESOLVED;
+    await expect(
+      service.postPartyDisputeMessage(BUYER_ID, disputeId, '추가'),
+    ).rejects.toMatchObject({ response: { code: 'TRADE_DISPUTE_CLOSED' } });
+  });
+
+  it('미배정 관리자 공개메시지는 409', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await expect(
+      service.postAdminDisputeMessage('admin-1', disputeId, '안녕하세요', false),
+    ).rejects.toMatchObject({
+      response: { code: 'TRADE_DISPUTE_NOT_ASSIGNED' },
+    });
+  });
+
+  it('assign 시 시스템 메시지를 남긴다', async () => {
+    await service.openDispute('admin-1', TRADE_ID, {
+      reasonCode: TradeDisputeReasonCode.ADMIN_OPENED,
+      reason: '확인 불일치',
+    });
+    const disputeId = [...store.disputes.keys()][0];
+    await service.assignDispute('admin-1', disputeId, 'admin-1');
+    expect(
+      store.actions.some(
+        (action) =>
+          action.actorUserId == null &&
+          action.message === '상담원이 합류했어요.',
+      ),
+    ).toBe(true);
+    const posted = await service.postAdminDisputeMessage(
+      'admin-1',
+      disputeId,
+      '확인 도와드릴게요',
+      false,
+    );
+    expect(posted.actorRole).toBe(TradeEventActorType.ADMIN);
+    expect(store.disputes.get(disputeId)?.status).toBe(
+      TradeDisputeStatus.IN_REVIEW,
+    );
+  });
+
+  it('withdraw-payment-report: 10분 내 철회 → WAITING_BUYER_PAYMENT', async () => {
+    const reported = await service.reportPayment(BUYER_ID, TRADE_ID);
+    expect(reported.actions.canWithdrawPaymentReport).toBe(true);
+
+    const withdrawn = await service.withdrawPaymentReport(BUYER_ID, TRADE_ID);
+    expect(withdrawn.status).toBe(TradeStatus.WAITING_BUYER_PAYMENT);
+    expect(store.trades.get(TRADE_ID)?.buyerReportedPaidAt).toBeNull();
+    expect(store.trades.get(TRADE_ID)?.sellerConfirmationDueAt).toBeNull();
+    expect(
+      store.events.some(
+        (event) =>
+          event.eventCode === TradeEventCode.BUYER_WITHDREW_PAYMENT_REPORT,
+      ),
+    ).toBe(true);
+    expect(withdrawn.actions.canReportPayment).toBe(true);
+    expect(withdrawn.actions.canWithdrawPaymentReport).toBe(false);
+  });
+
+  it('withdraw-payment-report: 윈도우 만료 거부', async () => {
+    await service.reportPayment(BUYER_ID, TRADE_ID);
+    const trade = store.trades.get(TRADE_ID)!;
+    trade.buyerReportedPaidAt = new Date(Date.now() - 11 * 60 * 1000);
+    store.trades.set(TRADE_ID, trade);
+
+    await expect(
+      service.withdrawPaymentReport(BUYER_ID, TRADE_ID),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('withdraw-payment-report: 판매자·확인 후 거부', async () => {
+    await service.reportPayment(BUYER_ID, TRADE_ID);
+    await expect(
+      service.withdrawPaymentReport(SELLER_ID, TRADE_ID),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    await service.confirmPayment(SELLER_ID, TRADE_ID);
+    await expect(
+      service.withdrawPaymentReport(BUYER_ID, TRADE_ID),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 });

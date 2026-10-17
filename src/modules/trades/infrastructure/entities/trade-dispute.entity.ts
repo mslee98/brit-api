@@ -23,6 +23,7 @@ import { TradeEntity } from './trade.entity';
 @Entity({ name: 'trade_disputes' })
 @Index('ux_trade_disputes_dispute_number', ['disputeNumber'], { unique: true })
 @Index('ux_trade_disputes_trade_id', ['tradeId'], { unique: true })
+@Index('ix_trade_disputes_assigned_status', ['assignedAdminUserId', 'status'])
 export class TradeDisputeEntity {
   @PrimaryGeneratedColumn('uuid', { name: 'id' })
   id!: string;

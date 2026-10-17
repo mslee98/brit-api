@@ -21,6 +21,8 @@ export enum NotificationEventType {
   TRADE_REQUEST_ACCEPTED = 'TRADE_REQUEST_ACCEPTED',
   /** 구매자 입금 신고 → 판매자 */
   TRADE_PAYMENT_REPORTED = 'TRADE_PAYMENT_REPORTED',
+  /** 구매자 입금 신고 철회 → 판매자 */
+  TRADE_PAYMENT_REPORT_WITHDRAWN = 'TRADE_PAYMENT_REPORT_WITHDRAWN',
   /** Trade COMPLETED → 구매자 */
   TRADE_COMPLETED = 'TRADE_COMPLETED',
   /** 판매자 거절 → 구매자 */

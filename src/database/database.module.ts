@@ -23,6 +23,7 @@ import { OrderNumberSequenceEntity } from '../modules/orders/infrastructure/enti
 import { SellOrderCoinLotEntity } from '../modules/orders/infrastructure/entities/sell-order-coin-lot.entity';
 import { SellOrderEntity } from '../modules/orders/infrastructure/entities/sell-order.entity';
 import { TradeCoinLotEntity } from '../modules/trades/infrastructure/entities/trade-coin-lot.entity';
+import { TradeDisputeActionEntity } from '../modules/trades/infrastructure/entities/trade-dispute-action.entity';
 import { TradeDisputeEntity } from '../modules/trades/infrastructure/entities/trade-dispute.entity';
 import { TradeEventEntity } from '../modules/trades/infrastructure/entities/trade-event.entity';
 import { TradeEntity } from '../modules/trades/infrastructure/entities/trade.entity';
@@ -65,6 +66,7 @@ export const entities = [
   TradeCoinLotEntity,
   TradeEventEntity,
   TradeDisputeEntity,
+  TradeDisputeActionEntity,
   MatchingAttemptEntity,
   TradeRequestEntity,
 ];

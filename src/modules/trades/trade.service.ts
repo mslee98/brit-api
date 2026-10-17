@@ -4,6 +4,7 @@ import {
   DataSource,
   EntityManager,
   FindOptionsWhere,
+  In,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -40,31 +41,53 @@ import { UserEntity } from '../users/infrastructure/entities/user.entity';
 import type { AdminPartySummary } from '../users/dto/admin-party.dto';
 import { UserService } from '../users/user.service';
 import {
+  OPEN_DISPUTE_STATUSES,
   TRADE_LEDGER_REFERENCE_TYPE,
   TRADE_TIMEOUT_BATCH_SIZE,
   TRANSFER_RECOVERY_MIN_AGE_MS,
+  DISPUTE_SYSTEM_MESSAGE_CLOSED,
+  DISPUTE_SYSTEM_MESSAGE_JOINED,
+  DISPUTE_TEAM_DISPLAY_NAME,
+  PAYMENT_REPORT_WITHDRAW_WINDOW_MS,
 } from './domain/constants/trade.constants';
+import { TradeDisputeActionType } from './domain/enums/trade-dispute-action-type.enum';
 import { TradeDisputePriority } from './domain/enums/trade-dispute-priority.enum';
+import { TradeDisputeReasonCode } from './domain/enums/trade-dispute-reason-code.enum';
 import { TradeDisputeResolution } from './domain/enums/trade-dispute-resolution.enum';
 import { TradeDisputeStatus } from './domain/enums/trade-dispute-status.enum';
 import { TradeEventActorType } from './domain/enums/trade-event-actor-type.enum';
 import { TradeEventCode } from './domain/enums/trade-event-code.enum';
 import { TradeStatus } from './domain/enums/trade-status.enum';
 import {
+  AdminDisputeDetailDto,
+  AdminDisputeListItemDto,
+} from './dto/admin-dispute-response.dto';
+import {
   AdminTradeCoinLotDto,
   AdminTradeDetailDto,
+  AdminTradeDisputeDto,
   AdminTradeEventDto,
   AdminTradeListItemDto,
 } from './dto/admin-trade-response.dto';
 import {
   AdminOpenDisputeDto,
+  AdminResolveDisputeDto,
   AdminTradeReasonDto,
 } from './dto/admin-trade-command.dto';
 import {
+  SearchAdminDisputesDto,
   SearchAdminTradeTimeoutsDto,
   SearchAdminTradesDto,
   SearchMyTradesDto,
 } from './dto/search-trades.dto';
+import {
+  AdminDisputeMessageDto,
+  AdminDisputeMessageListDto,
+  PartyDisputeDetailDto,
+  PartyDisputeMessageDto,
+  PartyDisputeMessageListDto,
+  SearchDisputeMessagesDto,
+} from './dto/dispute-message.dto';
 import {
   TradeActionsDto,
   TradeListItemDto,
@@ -73,9 +96,13 @@ import {
 } from './dto/trade-response.dto';
 import { TradeDomainException } from './exceptions/trade.exceptions';
 import { TradeCoinLotEntity } from './infrastructure/entities/trade-coin-lot.entity';
+import { TradeDisputeActionEntity } from './infrastructure/entities/trade-dispute-action.entity';
 import { TradeDisputeEntity } from './infrastructure/entities/trade-dispute.entity';
 import { TradeEventEntity } from './infrastructure/entities/trade-event.entity';
 import { TradeEntity } from './infrastructure/entities/trade.entity';
+import { DisputeRealtimePublisher } from './realtime/dispute-realtime.publisher';
+import { TradeRealtimePublisher } from './realtime/trade-realtime.publisher';
+import { DisputeEvidenceStorage } from './dispute-evidence.storage';
 import { maskNickname } from './utils/nickname-mask.util';
 
 export type SellerBankSnapshot = {
@@ -104,6 +131,7 @@ type ExtraFlags = {
   alreadyReported?: boolean;
   alreadyConfirmed?: boolean;
   alreadyCancelled?: boolean;
+  alreadyDisputed?: boolean;
 };
 
 type PartyRole = 'BUYER' | 'SELLER' | 'PARTY';
@@ -121,6 +149,9 @@ export class TradeService {
     private readonly userService: UserService,
     private readonly banksService: BanksService,
     private readonly notificationService: NotificationService,
+    private readonly disputeRealtime: DisputeRealtimePublisher,
+    private readonly tradeRealtime: TradeRealtimePublisher,
+    private readonly disputeEvidenceStorage: DisputeEvidenceStorage,
     @InjectRepository(TradeEntity)
     private readonly tradeRepository: Repository<TradeEntity>,
     @InjectRepository(TradeEventEntity)
@@ -129,6 +160,8 @@ export class TradeService {
     private readonly tradeCoinLotRepository: Repository<TradeCoinLotEntity>,
     @InjectRepository(TradeDisputeEntity)
     private readonly tradeDisputeRepository: Repository<TradeDisputeEntity>,
+    @InjectRepository(TradeDisputeActionEntity)
+    private readonly tradeDisputeActionRepository: Repository<TradeDisputeActionEntity>,
     @InjectRepository(MatchingPolicyEntity)
     private readonly matchingPolicyRepository: Repository<MatchingPolicyEntity>,
   ) {}
@@ -251,8 +284,16 @@ export class TradeService {
       take: size,
     });
 
+    const disputesByTradeId = await this.loadDisputesByTradeIds(
+      rows
+        .filter((row) => row.status === TradeStatus.DISPUTED)
+        .map((row) => row.id),
+    );
+
     return {
-      items: rows.map((row) => this.toListItem(row, userId)),
+      items: rows.map((row) =>
+        this.toListItem(row, userId, disputesByTradeId.get(row.id) ?? null),
+      ),
       pagination: buildPaginationMeta(page, size, totalItems),
     };
   }
@@ -321,7 +362,64 @@ export class TradeService {
       });
     });
 
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId, { alreadyReported });
+  }
+
+  async withdrawPaymentReport(
+    userId: string,
+    tradeId: string,
+  ): Promise<TradeResponseDto> {
+    await this.dataSource.transaction(async (manager) => {
+      const trade = await this.lockTrade(manager, tradeId);
+      this.assertParty(trade, userId, 'BUYER');
+
+      if (trade.status === TradeStatus.WAITING_BUYER_PAYMENT) {
+        return;
+      }
+      if (trade.status !== TradeStatus.WAITING_SELLER_CONFIRMATION) {
+        throw TradeDomainException.invalidStatus();
+      }
+      if (trade.buyerReportedPaidAt == null) {
+        throw TradeDomainException.invalidStatus();
+      }
+      const elapsed =
+        Date.now() - trade.buyerReportedPaidAt.getTime();
+      if (elapsed > PAYMENT_REPORT_WITHDRAW_WINDOW_MS) {
+        throw TradeDomainException.withdrawWindowExpired();
+      }
+
+      const previous = trade.status;
+      const now = new Date();
+      trade.status = TradeStatus.WAITING_BUYER_PAYMENT;
+      trade.buyerReportedPaidAt = null;
+      trade.sellerConfirmationDueAt = null;
+      trade.buyerPaymentDueAt = new Date(
+        now.getTime() + trade.buyerPaymentTimeoutSeconds * 1000,
+      );
+      await manager.getRepository(TradeEntity).save(trade);
+      await this.appendEvent(manager, {
+        trade,
+        previousStatus: previous,
+        newStatus: trade.status,
+        eventCode: TradeEventCode.BUYER_WITHDREW_PAYMENT_REPORT,
+        actorType: TradeEventActorType.BUYER,
+        actorUserId: userId,
+      });
+      await this.notificationService.enqueueTradePushInTransaction(manager, {
+        eventType: NotificationEventType.TRADE_PAYMENT_REPORT_WITHDRAWN,
+        actorUserId: userId,
+        referenceType: NotificationReferenceType.TRADE,
+        referenceId: trade.id,
+        deepLink: `/trade?tradeId=${trade.id}`,
+        recipientUserId: trade.sellerUserId,
+        recipientRole: 'SELLER',
+        tradeId: trade.id,
+      });
+    });
+
+    this.publishTradeUpdated(tradeId);
+    return this.getMyTrade(userId, tradeId);
   }
 
   async confirmPayment(
@@ -379,7 +477,81 @@ export class TradeService {
       );
     }
 
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId, { alreadyConfirmed });
+  }
+
+  async denyPayment(
+    userId: string,
+    tradeId: string,
+  ): Promise<TradeResponseDto> {
+    let alreadyDisputed = false;
+    let opened: TradeDisputeEntity | null = null;
+    await this.dataSource.transaction(async (manager) => {
+      const trade = await this.lockTrade(manager, tradeId);
+      if (trade.sellerUserId !== userId) {
+        if (trade.buyerUserId === userId) {
+          throw TradeDomainException.onlySellerCanDenyPayment();
+        }
+        throw TradeDomainException.accessDenied();
+      }
+      if (trade.status === TradeStatus.DISPUTED) {
+        alreadyDisputed = true;
+        return;
+      }
+      if (trade.status !== TradeStatus.WAITING_SELLER_CONFIRMATION) {
+        throw TradeDomainException.invalidStatus();
+      }
+      opened = await this.createDisputeInTransaction(manager, {
+        trade,
+        reasonCode: TradeDisputeReasonCode.NOT_RECEIVED,
+        requestedByUserId: userId,
+        actorType: TradeEventActorType.SELLER,
+        actorUserId: userId,
+        openEventCode: TradeEventCode.SELLER_DENIED_PAYMENT,
+        resolutionReason: null,
+      });
+    });
+    this.publishDisputeOpenedIfPresent(opened);
+    this.publishTradeUpdated(tradeId);
+    return this.getMyTrade(userId, tradeId, { alreadyDisputed });
+  }
+
+  async openPartyDispute(
+    userId: string,
+    tradeId: string,
+    reason?: string,
+  ): Promise<TradeResponseDto> {
+    let alreadyDisputed = false;
+    let opened: TradeDisputeEntity | null = null;
+    await this.dataSource.transaction(async (manager) => {
+      const trade = await this.lockTrade(manager, tradeId);
+      if (trade.buyerUserId !== userId) {
+        if (trade.sellerUserId === userId) {
+          throw TradeDomainException.onlyBuyerCanOpenDispute();
+        }
+        throw TradeDomainException.accessDenied();
+      }
+      if (trade.status === TradeStatus.DISPUTED) {
+        alreadyDisputed = true;
+        return;
+      }
+      if (trade.status !== TradeStatus.WAITING_SELLER_CONFIRMATION) {
+        throw TradeDomainException.invalidStatus();
+      }
+      opened = await this.createDisputeInTransaction(manager, {
+        trade,
+        reasonCode: TradeDisputeReasonCode.SELLER_NO_CONFIRM,
+        requestedByUserId: userId,
+        actorType: TradeEventActorType.BUYER,
+        actorUserId: userId,
+        openEventCode: TradeEventCode.BUYER_OPENED_DISPUTE,
+        resolutionReason: reason ?? null,
+      });
+    });
+    this.publishDisputeOpenedIfPresent(opened);
+    this.publishTradeUpdated(tradeId);
+    return this.getMyTrade(userId, tradeId, { alreadyDisputed });
   }
 
   async cancelTrade(
@@ -420,6 +592,7 @@ export class TradeService {
       });
     });
 
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId, { alreadyCancelled });
   }
 
@@ -455,6 +628,7 @@ export class TradeService {
         metadata: { reason: reason ?? null },
       });
     });
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId);
   }
 
@@ -494,6 +668,7 @@ export class TradeService {
         actorUserId: userId,
       });
     });
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId);
   }
 
@@ -532,6 +707,7 @@ export class TradeService {
         actorUserId: userId,
       });
     });
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId);
   }
 
@@ -580,6 +756,7 @@ export class TradeService {
         buyOrderMode: 'CANCEL',
       });
     });
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId);
   }
 
@@ -592,6 +769,7 @@ export class TradeService {
       actorUserId: userId,
       requireSeller: true,
     });
+    this.publishTradeUpdated(tradeId);
     return this.getMyTrade(userId, tradeId);
   }
 
@@ -673,6 +851,7 @@ export class TradeService {
     dto: AdminOpenDisputeDto,
     ipAddress: string | null = null,
   ): Promise<AdminTradeDetailDto> {
+    let opened: TradeDisputeEntity | null = null;
     await this.dataSource.transaction(async (manager) => {
       const trade = await this.lockTrade(manager, tradeId);
       if (
@@ -685,44 +864,14 @@ export class TradeService {
         throw TradeDomainException.disputeAlreadyExists();
       }
 
-      const existingDispute = await manager
-        .getRepository(TradeDisputeEntity)
-        .findOne({ where: { tradeId: trade.id } });
-      if (existingDispute) {
-        throw TradeDomainException.disputeAlreadyExists();
-      }
-
-      const previous = trade.status;
-      trade.status = TradeStatus.DISPUTED;
-      await manager.getRepository(TradeEntity).save(trade);
-
-      const disputeNumber = await nextOrderNumber(manager, 'TD');
-      const now = new Date();
-      await manager.getRepository(TradeDisputeEntity).save(
-        manager.getRepository(TradeDisputeEntity).create({
-          disputeNumber,
-          tradeId: trade.id,
-          reasonCode: dto.reasonCode,
-          status: TradeDisputeStatus.OPEN_UNASSIGNED,
-          priority: TradeDisputePriority.NORMAL,
-          requestedByUserId: null,
-          assignedAdminUserId: null,
-          leaderAdminUserId: null,
-          resolution: null,
-          resolutionReason: dto.reason,
-          requestedAt: now,
-          assignedAt: null,
-          resolvedAt: null,
-        }),
-      );
-
-      await this.appendEvent(manager, {
+      opened = await this.createDisputeInTransaction(manager, {
         trade,
-        previousStatus: previous,
-        newStatus: trade.status,
-        eventCode: TradeEventCode.ADMIN_OPENED_DISPUTE,
+        reasonCode: dto.reasonCode,
+        requestedByUserId: null,
         actorType: TradeEventActorType.ADMIN,
         actorUserId: adminUserId,
+        openEventCode: TradeEventCode.ADMIN_OPENED_DISPUTE,
+        resolutionReason: dto.reason,
         metadata: { reasonCode: dto.reasonCode, reason: dto.reason },
       });
       await this.writeAdminAudit(manager, {
@@ -732,18 +881,47 @@ export class TradeService {
         reason: dto.reason,
         afterData: {
           tradeId: trade.id,
-          status: trade.status,
+          status: TradeStatus.DISPUTED,
           reasonCode: dto.reasonCode,
         },
         ipAddress,
       });
-
-      await this.enqueueTradePartyPushInTransaction(manager, {
-        eventType: NotificationEventType.DISPUTE_OPENED,
-        actorUserId: adminUserId,
-        trade,
-      });
     });
+    this.publishDisputeOpenedIfPresent(opened);
+    this.publishTradeUpdated(tradeId);
+    return this.getAdminTrade(tradeId);
+  }
+
+  async resolveDispute(
+    adminUserId: string,
+    tradeId: string,
+    dto: AdminResolveDisputeDto,
+    ipAddress: string | null = null,
+  ): Promise<AdminTradeDetailDto> {
+    if (dto.resolution === TradeDisputeResolution.FORCE_COMPLETE) {
+      await this.resolveDisputeForceComplete(
+        adminUserId,
+        tradeId,
+        dto.reason,
+        ipAddress,
+      );
+    } else if (dto.resolution === TradeDisputeResolution.FORCE_CANCEL) {
+      await this.resolveDisputeForceCancel(
+        adminUserId,
+        tradeId,
+        dto.reason,
+        ipAddress,
+      );
+    } else {
+      await this.resolveDisputeResume(
+        adminUserId,
+        tradeId,
+        dto.reason,
+        ipAddress,
+      );
+    }
+    await this.publishDisputeResolvedForTrade(tradeId);
+    this.publishTradeUpdated(tradeId);
     return this.getAdminTrade(tradeId);
   }
 
@@ -806,6 +984,322 @@ export class TradeService {
       items: rows.map((row) => this.toAdminTradeListItem(row, parties)),
       pagination: buildPaginationMeta(page, size, totalItems),
     };
+  }
+
+  async listAdminDisputes(
+    query: SearchAdminDisputesDto,
+    actorUserId: string,
+  ): Promise<{ items: AdminDisputeListItemDto[]; pagination: PaginationMeta }> {
+    const page = query.page ?? 1;
+    const size = query.size ?? 20;
+    const qb = this.tradeDisputeRepository
+      .createQueryBuilder('dispute')
+      .innerJoinAndSelect('dispute.trade', 'trade');
+    this.applyAdminDisputeListFilters(qb, query, actorUserId);
+
+    const [rows, totalItems] = await qb
+      .orderBy('dispute.requestedAt', 'DESC')
+      .skip((page - 1) * size)
+      .take(size)
+      .getManyAndCount();
+
+    const parties = await this.userService.getAdminPartySummaries(
+      rows.flatMap((row) => [row.trade.buyerUserId, row.trade.sellerUserId]),
+    );
+
+    return {
+      items: rows.map((row) => this.toAdminDisputeListItem(row, parties)),
+      pagination: buildPaginationMeta(page, size, totalItems),
+    };
+  }
+
+  async getAdminDispute(disputeId: string): Promise<AdminDisputeDetailDto> {
+    const dispute = await this.tradeDisputeRepository.findOne({
+      where: { id: disputeId },
+      relations: { trade: true },
+    });
+    if (!dispute) {
+      throw TradeDomainException.disputeNotFound();
+    }
+    return this.toAdminDisputeDetail(dispute);
+  }
+
+  async assignDispute(
+    actorUserId: string,
+    disputeId: string,
+    assigneeUserId: string,
+    ipAddress: string | null = null,
+  ): Promise<AdminDisputeDetailDto> {
+    let systemAction: TradeDisputeActionEntity | null = null;
+    await this.dataSource.transaction(async (manager) => {
+      const dispute = await this.lockDispute(manager, disputeId);
+      this.assertDisputeNotTerminal(dispute);
+      if (dispute.status !== TradeDisputeStatus.OPEN_UNASSIGNED) {
+        throw TradeDomainException.disputeAlreadyAssigned();
+      }
+      systemAction = await this.applyDisputeAssignmentInTransaction(manager, {
+        dispute,
+        actorUserId,
+        assigneeUserId,
+        reason: '분쟁 배정',
+        ipAddress,
+      });
+    });
+    await this.publishAssignmentRealtime(disputeId, systemAction);
+    return this.getAdminDispute(disputeId);
+  }
+
+  async takeoverDispute(
+    actorUserId: string,
+    disputeId: string,
+    ipAddress: string | null = null,
+  ): Promise<AdminDisputeDetailDto> {
+    let systemAction: TradeDisputeActionEntity | null = null;
+    let skipped = false;
+    await this.dataSource.transaction(async (manager) => {
+      const dispute = await this.lockDispute(manager, disputeId);
+      this.assertDisputeNotTerminal(dispute);
+      if (dispute.assignedAdminUserId === actorUserId) {
+        skipped = true;
+        return;
+      }
+      systemAction = await this.applyDisputeAssignmentInTransaction(manager, {
+        dispute,
+        actorUserId,
+        assigneeUserId: actorUserId,
+        reason: '분쟁 인수',
+        ipAddress,
+      });
+    });
+    if (!skipped) {
+      await this.publishAssignmentRealtime(disputeId, systemAction);
+    }
+    return this.getAdminDispute(disputeId);
+  }
+
+  async getMyDispute(
+    userId: string,
+    disputeId: string,
+  ): Promise<PartyDisputeDetailDto> {
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    this.assertParty(dispute.trade, userId, 'PARTY');
+    return this.toPartyDisputeDetail(dispute);
+  }
+
+  async listPartyDisputeMessages(
+    userId: string,
+    disputeId: string,
+    query: SearchDisputeMessagesDto,
+  ): Promise<PartyDisputeMessageListDto> {
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    this.assertParty(dispute.trade, userId, 'PARTY');
+    const page = query.page ?? 1;
+    const size = query.size ?? 20;
+    const [rows, totalItems] =
+      await this.tradeDisputeActionRepository.findAndCount({
+        where: { disputeId, isInternal: false },
+        order: { createdAt: 'ASC', id: 'ASC' },
+        skip: (page - 1) * size,
+        take: size,
+      });
+    const nickname = await this.userService.getNicknameByUserId(
+      this.counterpartUserId(dispute.trade, userId),
+    );
+    return {
+      items: rows.map((row) =>
+        this.toPartyDisputeMessage(row, dispute.trade, userId, nickname),
+      ),
+      pagination: buildPaginationMeta(page, size, totalItems),
+    };
+  }
+
+  async postPartyDisputeMessage(
+    userId: string,
+    disputeId: string,
+    body: string,
+  ): Promise<PartyDisputeMessageDto> {
+    let saved!: TradeDisputeActionEntity;
+    await this.dataSource.transaction(async (manager) => {
+      const dispute = await this.lockDispute(manager, disputeId);
+      const trade = await this.lockTrade(manager, dispute.tradeId);
+      this.assertParty(trade, userId, 'PARTY');
+      this.assertDisputeWritable(dispute);
+      saved = await this.insertDisputeActionInTransaction(manager, {
+        disputeId: dispute.id,
+        actionType: TradeDisputeActionType.MESSAGE,
+        actorUserId: userId,
+        isInternal: false,
+        message: body.trim(),
+      });
+    });
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    const nickname = await this.userService.getNicknameByUserId(
+      this.counterpartUserId(dispute.trade, userId),
+    );
+    void this.disputeRealtime.publishMessageCreated({
+      disputeId,
+      message: this.toAdminDisputeMessage(saved, dispute.trade),
+    });
+    return this.toPartyDisputeMessage(
+      saved,
+      dispute.trade,
+      userId,
+      nickname,
+    );
+  }
+
+  async listAdminDisputeMessages(
+    disputeId: string,
+    query: SearchDisputeMessagesDto,
+  ): Promise<AdminDisputeMessageListDto> {
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    const page = query.page ?? 1;
+    const size = query.size ?? 20;
+    const [rows, totalItems] =
+      await this.tradeDisputeActionRepository.findAndCount({
+        where: { disputeId },
+        order: { createdAt: 'ASC', id: 'ASC' },
+        skip: (page - 1) * size,
+        take: size,
+      });
+    return {
+      items: rows.map((row) =>
+        this.toAdminDisputeMessage(row, dispute.trade),
+      ),
+      pagination: buildPaginationMeta(page, size, totalItems),
+    };
+  }
+
+  async postAdminDisputeMessage(
+    adminUserId: string,
+    disputeId: string,
+    body: string,
+    isInternal: boolean,
+  ): Promise<AdminDisputeMessageDto> {
+    let saved!: TradeDisputeActionEntity;
+    await this.dataSource.transaction(async (manager) => {
+      const dispute = await this.lockDispute(manager, disputeId);
+      this.assertDisputeWritable(dispute);
+      if (!isInternal && dispute.assignedAdminUserId == null) {
+        throw TradeDomainException.disputeNotAssigned();
+      }
+      if (
+        !isInternal &&
+        dispute.status === TradeDisputeStatus.ASSIGNED
+      ) {
+        dispute.status = TradeDisputeStatus.IN_REVIEW;
+        await manager.getRepository(TradeDisputeEntity).save(dispute);
+      }
+      saved = await this.insertDisputeActionInTransaction(manager, {
+        disputeId: dispute.id,
+        actionType: isInternal
+          ? TradeDisputeActionType.INTERNAL_NOTE
+          : TradeDisputeActionType.MESSAGE,
+        actorUserId: adminUserId,
+        isInternal,
+        message: body.trim(),
+      });
+    });
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    const message = this.toAdminDisputeMessage(saved, dispute.trade);
+    void this.disputeRealtime.publishMessageCreated({
+      disputeId,
+      message,
+    });
+    if (!isInternal && dispute.status === TradeDisputeStatus.IN_REVIEW) {
+      this.disputeRealtime.publishDisputeUpdated({
+        disputeId,
+        tradeId: dispute.tradeId,
+        status: dispute.status,
+      });
+    }
+    return message;
+  }
+
+  async postPartyDisputeEvidence(
+    userId: string,
+    disputeId: string,
+    file: Express.Multer.File,
+  ): Promise<PartyDisputeMessageDto> {
+    const stored = await this.disputeEvidenceStorage.saveDisputeImage(
+      disputeId,
+      file,
+    );
+    let saved!: TradeDisputeActionEntity;
+    await this.dataSource.transaction(async (manager) => {
+      const dispute = await this.lockDispute(manager, disputeId);
+      const trade = await this.lockTrade(manager, dispute.tradeId);
+      this.assertParty(trade, userId, 'PARTY');
+      this.assertDisputeWritable(dispute);
+      saved = await this.insertDisputeActionInTransaction(manager, {
+        disputeId: dispute.id,
+        actionType: TradeDisputeActionType.EVIDENCE,
+        actorUserId: userId,
+        isInternal: false,
+        message: '이미지를 첨부했어요.',
+        metadata: {
+          url: stored.url,
+          mimeType: stored.mimeType,
+          originalName: stored.originalName,
+        },
+      });
+    });
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    const nickname = await this.userService.getNicknameByUserId(
+      this.counterpartUserId(dispute.trade, userId),
+    );
+    void this.disputeRealtime.publishMessageCreated({
+      disputeId,
+      message: this.toAdminDisputeMessage(saved, dispute.trade),
+    });
+    return this.toPartyDisputeMessage(
+      saved,
+      dispute.trade,
+      userId,
+      nickname,
+    );
+  }
+
+  async postAdminDisputeEvidence(
+    adminUserId: string,
+    disputeId: string,
+    file: Express.Multer.File,
+  ): Promise<AdminDisputeMessageDto> {
+    const stored = await this.disputeEvidenceStorage.saveDisputeImage(
+      disputeId,
+      file,
+    );
+    let saved!: TradeDisputeActionEntity;
+    await this.dataSource.transaction(async (manager) => {
+      const dispute = await this.lockDispute(manager, disputeId);
+      this.assertDisputeWritable(dispute);
+      if (dispute.assignedAdminUserId == null) {
+        throw TradeDomainException.disputeNotAssigned();
+      }
+      if (dispute.status === TradeDisputeStatus.ASSIGNED) {
+        dispute.status = TradeDisputeStatus.IN_REVIEW;
+        await manager.getRepository(TradeDisputeEntity).save(dispute);
+      }
+      saved = await this.insertDisputeActionInTransaction(manager, {
+        disputeId: dispute.id,
+        actionType: TradeDisputeActionType.EVIDENCE,
+        actorUserId: adminUserId,
+        isInternal: false,
+        message: '이미지를 첨부했어요.',
+        metadata: {
+          url: stored.url,
+          mimeType: stored.mimeType,
+          originalName: stored.originalName,
+        },
+      });
+    });
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    const message = this.toAdminDisputeMessage(saved, dispute.trade);
+    void this.disputeRealtime.publishMessageCreated({
+      disputeId,
+      message,
+    });
+    return message;
   }
 
   async getAdminTradeEvents(tradeId: string): Promise<AdminTradeEventDto[]> {
@@ -881,16 +1375,7 @@ export class TradeService {
         returnedAmount: lot.returnedAmount,
       })),
       events: events.map((event) => this.toAdminTradeEvent(event)),
-      dispute: dispute
-        ? {
-            id: dispute.id,
-            disputeNumber: dispute.disputeNumber,
-            status: dispute.status,
-            priority: dispute.priority,
-            reasonCode: dispute.reasonCode,
-            requestedAt: dispute.requestedAt,
-          }
-        : null,
+      dispute: dispute ? this.toAdminTradeDispute(dispute) : null,
       buyerPaymentDueAt: trade.buyerPaymentDueAt,
       buyerPaymentTimeoutSeconds: trade.buyerPaymentTimeoutSeconds,
       sellerConfirmationDueAt: trade.sellerConfirmationDueAt,
@@ -1081,6 +1566,11 @@ export class TradeService {
       where: { tradeId: trade.id },
     });
     if (dispute && dispute.status !== TradeDisputeStatus.RESOLVED) {
+      await this.insertSystemDisputeMessageInTransaction(manager, {
+        disputeId: dispute.id,
+        kind: 'RESOLVED',
+        message: DISPUTE_SYSTEM_MESSAGE_CLOSED,
+      });
       dispute.status = TradeDisputeStatus.RESOLVED;
       dispute.resolution = TradeDisputeResolution.FORCE_COMPLETE;
       dispute.resolvedAt = now;
@@ -1119,7 +1609,7 @@ export class TradeService {
   }
 
   private async expireOneBuyerPayment(): Promise<boolean> {
-    return this.dataSource.transaction(async (manager) => {
+    const tradeId = await this.dataSource.transaction(async (manager) => {
       const rows: Array<{ id: string }> = await manager.query(
         `
         SELECT id
@@ -1133,11 +1623,11 @@ export class TradeService {
         [TradeStatus.WAITING_BUYER_PAYMENT],
       );
       if (rows.length === 0) {
-        return false;
+        return null;
       }
       const trade = await this.lockTrade(manager, rows[0].id);
       if (trade.status !== TradeStatus.WAITING_BUYER_PAYMENT) {
-        return false;
+        return null;
       }
       const previous = trade.status;
       trade.status = TradeStatus.PAYMENT_TIMEOUT;
@@ -1155,12 +1645,16 @@ export class TradeService {
         actorUserId: null,
         trade,
       });
-      return true;
+      return trade.id;
     });
+    if (!tradeId) return false;
+    this.publishTradeUpdated(tradeId);
+    return true;
   }
 
   private async expireOneSellerConfirmation(): Promise<boolean> {
-    return this.dataSource.transaction(async (manager) => {
+    const openedRef: { value: TradeDisputeEntity | null } = { value: null };
+    const didExpire = await this.dataSource.transaction(async (manager) => {
       const rows: Array<{ id: string }> = await manager.query(
         `
         SELECT id
@@ -1175,72 +1669,33 @@ export class TradeService {
         [TradeStatus.WAITING_SELLER_CONFIRMATION],
       );
       if (rows.length === 0) {
-        return false;
+        return null;
       }
       const trade = await this.lockTrade(manager, rows[0].id);
       if (trade.status !== TradeStatus.WAITING_SELLER_CONFIRMATION) {
-        return false;
+        return null;
       }
 
-      const existing = await manager.getRepository(TradeDisputeEntity).findOne({
-        where: { tradeId: trade.id },
-      });
-      if (existing) {
-        throw TradeDomainException.disputeAlreadyExists();
-      }
-
-      const previous = trade.status;
-      trade.status = TradeStatus.DISPUTED;
-      await manager.getRepository(TradeEntity).save(trade);
-
-      const disputeNumber = await nextOrderNumber(manager, 'TD');
-      const now = new Date();
-      await manager.getRepository(TradeDisputeEntity).save(
-        manager.getRepository(TradeDisputeEntity).create({
-          disputeNumber,
-          tradeId: trade.id,
-          reasonCode: 'SELLER_CONFIRMATION_TIMEOUT',
-          status: TradeDisputeStatus.OPEN_UNASSIGNED,
-          priority: TradeDisputePriority.NORMAL,
-          requestedByUserId: null,
-          assignedAdminUserId: null,
-          leaderAdminUserId: null,
-          resolution: null,
-          resolutionReason: null,
-          requestedAt: now,
-          assignedAt: null,
-          resolvedAt: null,
-        }),
-      );
-
-      await this.appendEvent(manager, {
+      openedRef.value = await this.createDisputeInTransaction(manager, {
         trade,
-        previousStatus: previous,
-        newStatus: trade.status,
-        eventCode: TradeEventCode.SELLER_CONFIRMATION_TIMED_OUT,
+        reasonCode: TradeDisputeReasonCode.SELLER_CONFIRMATION_TIMEOUT,
+        requestedByUserId: null,
         actorType: TradeEventActorType.SYSTEM,
         actorUserId: null,
+        openEventCode: TradeEventCode.SELLER_CONFIRMATION_TIMED_OUT,
+        resolutionReason: null,
+        alsoAppendDisputeOpened: true,
       });
-      await this.appendEvent(manager, {
-        trade,
-        previousStatus: TradeStatus.DISPUTED,
-        newStatus: TradeStatus.DISPUTED,
-        eventCode: TradeEventCode.DISPUTE_OPENED,
-        actorType: TradeEventActorType.SYSTEM,
-        actorUserId: null,
-        metadata: { reasonCode: 'SELLER_CONFIRMATION_TIMEOUT' },
-      });
-      await this.enqueueTradePartyPushInTransaction(manager, {
-        eventType: NotificationEventType.DISPUTE_OPENED,
-        actorUserId: null,
-        trade,
-      });
-      return true;
+      return trade.id;
     });
+    if (!didExpire) return false;
+    this.publishDisputeOpenedIfPresent(openedRef.value);
+    this.publishTradeUpdated(didExpire);
+    return true;
   }
 
   private async recoverOneStuckTransfer(): Promise<boolean> {
-    return this.dataSource.transaction(async (manager) => {
+    const tradeId = await this.dataSource.transaction(async (manager) => {
       const rows: Array<{ id: string }> = await manager.query(
         `
         SELECT id
@@ -1255,11 +1710,14 @@ export class TradeService {
         [TradeStatus.COIN_TRANSFERRING, TRANSFER_RECOVERY_MIN_AGE_MS],
       );
       if (rows.length === 0) {
-        return false;
+        return null;
       }
       await this.transferTradeCoinInTransaction(manager, rows[0].id);
-      return true;
+      return rows[0].id;
     });
+    if (!tradeId) return false;
+    this.publishTradeUpdated(tradeId);
+    return true;
   }
 
   private async markUnpaidInTransaction(
@@ -1513,6 +1971,337 @@ export class TradeService {
     await manager.getRepository(BuyOrderEntity).save(buyOrder);
   }
 
+  private async createDisputeInTransaction(
+    manager: EntityManager,
+    input: {
+      trade: TradeEntity;
+      reasonCode: TradeDisputeReasonCode;
+      requestedByUserId: string | null;
+      actorType: TradeEventActorType;
+      actorUserId: string | null;
+      openEventCode: TradeEventCode;
+      resolutionReason: string | null;
+      metadata?: Record<string, unknown>;
+      alsoAppendDisputeOpened?: boolean;
+    },
+  ): Promise<TradeDisputeEntity> {
+    const { trade } = input;
+    const existing = await manager.getRepository(TradeDisputeEntity).findOne({
+      where: { tradeId: trade.id },
+    });
+    if (existing) {
+      throw TradeDomainException.disputeAlreadyExists();
+    }
+
+    const previous = trade.status;
+    trade.status = TradeStatus.DISPUTED;
+    await manager.getRepository(TradeEntity).save(trade);
+
+    const disputeNumber = await nextOrderNumber(manager, 'TD');
+    const now = new Date();
+    const dispute = await manager.getRepository(TradeDisputeEntity).save(
+      manager.getRepository(TradeDisputeEntity).create({
+        disputeNumber,
+        tradeId: trade.id,
+        reasonCode: input.reasonCode,
+        status: TradeDisputeStatus.OPEN_UNASSIGNED,
+        priority: TradeDisputePriority.NORMAL,
+        requestedByUserId: input.requestedByUserId,
+        assignedAdminUserId: null,
+        leaderAdminUserId: null,
+        resolution: null,
+        resolutionReason: input.resolutionReason,
+        requestedAt: now,
+        assignedAt: null,
+        resolvedAt: null,
+      }),
+    );
+
+    await this.appendEvent(manager, {
+      trade,
+      previousStatus: previous,
+      newStatus: trade.status,
+      eventCode: input.openEventCode,
+      actorType: input.actorType,
+      actorUserId: input.actorUserId,
+      metadata: input.metadata ?? { reasonCode: input.reasonCode },
+    });
+    if (input.alsoAppendDisputeOpened) {
+      await this.appendEvent(manager, {
+        trade,
+        previousStatus: TradeStatus.DISPUTED,
+        newStatus: TradeStatus.DISPUTED,
+        eventCode: TradeEventCode.DISPUTE_OPENED,
+        actorType: TradeEventActorType.SYSTEM,
+        actorUserId: null,
+        metadata: { reasonCode: input.reasonCode },
+      });
+    } else if (input.openEventCode !== TradeEventCode.DISPUTE_OPENED) {
+      await this.appendEvent(manager, {
+        trade,
+        previousStatus: TradeStatus.DISPUTED,
+        newStatus: TradeStatus.DISPUTED,
+        eventCode: TradeEventCode.DISPUTE_OPENED,
+        actorType: input.actorType,
+        actorUserId: input.actorUserId,
+        metadata: { reasonCode: input.reasonCode },
+      });
+    }
+    await this.enqueueTradePartyPushInTransaction(manager, {
+      eventType: NotificationEventType.DISPUTE_OPENED,
+      actorUserId: input.actorUserId,
+      trade,
+      deepLink: `/trade/dispute/${dispute.id}`,
+    });
+    return dispute;
+  }
+
+  private async resolveDisputeForceComplete(
+    adminUserId: string,
+    tradeId: string,
+    reason: string,
+    ipAddress: string | null,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const trade = await this.lockTrade(manager, tradeId);
+      if (trade.status === TradeStatus.COMPLETED) {
+        return;
+      }
+      if (
+        trade.status !== TradeStatus.DISPUTED &&
+        trade.status !== TradeStatus.COIN_TRANSFERRING
+      ) {
+        throw TradeDomainException.invalidStatus();
+      }
+
+      if (trade.status === TradeStatus.DISPUTED) {
+        const now = new Date();
+        const previous = trade.status;
+        trade.status = TradeStatus.COIN_TRANSFERRING;
+        trade.sellerConfirmedAt = now;
+        trade.coinTransferStartedAt = now;
+        await manager.getRepository(TradeEntity).save(trade);
+        await this.appendEvent(manager, {
+          trade,
+          previousStatus: previous,
+          newStatus: trade.status,
+          eventCode: TradeEventCode.ADMIN_FORCE_COMPLETED,
+          actorType: TradeEventActorType.ADMIN,
+          actorUserId: adminUserId,
+          metadata: { reason },
+        });
+        await this.appendEvent(manager, {
+          trade,
+          previousStatus: TradeStatus.COIN_TRANSFERRING,
+          newStatus: TradeStatus.COIN_TRANSFERRING,
+          eventCode: TradeEventCode.COIN_TRANSFER_STARTED,
+          actorType: TradeEventActorType.SYSTEM,
+          actorUserId: null,
+        });
+        await this.markDisputeResolvedInTransaction(manager, {
+          tradeId: trade.id,
+          resolution: TradeDisputeResolution.FORCE_COMPLETE,
+          reason,
+        });
+        await this.writeAdminAudit(manager, {
+          actorUserId: adminUserId,
+          actionType: AuditActionType.ADMIN_RESOLVE_TRADE_DISPUTE,
+          targetId: trade.id,
+          reason,
+          afterData: {
+            tradeId: trade.id,
+            resolution: TradeDisputeResolution.FORCE_COMPLETE,
+          },
+          ipAddress,
+        });
+      }
+    });
+
+    try {
+      await this.transferTradeCoin(tradeId);
+    } catch (error) {
+      this.logger.warn(
+        `force-complete coin transfer deferred for trade=${tradeId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async resolveDisputeForceCancel(
+    adminUserId: string,
+    tradeId: string,
+    reason: string,
+    ipAddress: string | null,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const trade = await this.lockTrade(manager, tradeId);
+      if (trade.status === TradeStatus.CANCELLED) {
+        return;
+      }
+      if (trade.status !== TradeStatus.DISPUTED) {
+        throw TradeDomainException.invalidStatus();
+      }
+
+      let buyOrderMode: 'CANCEL' | 'REMATCH' = 'CANCEL';
+      const buyOrder = await manager.getRepository(BuyOrderEntity).findOne({
+        where: { id: trade.buyOrderId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const policy = await this.findActiveMatchingPolicy(manager);
+      if (buyOrder && buyOrder.rematchCount < policy.maxRematchCount) {
+        buyOrderMode = 'REMATCH';
+      }
+
+      await this.markDisputeResolvedInTransaction(manager, {
+        tradeId: trade.id,
+        resolution: TradeDisputeResolution.FORCE_CANCEL,
+        reason,
+      });
+      await this.appendEvent(manager, {
+        trade,
+        previousStatus: trade.status,
+        newStatus: trade.status,
+        eventCode: TradeEventCode.ADMIN_FORCE_CANCELLED,
+        actorType: TradeEventActorType.ADMIN,
+        actorUserId: adminUserId,
+        metadata: { reason, buyOrderMode },
+      });
+      await this.finalizeCancelledInTransaction(manager, {
+        trade,
+        actorType: TradeEventActorType.ADMIN,
+        actorUserId: adminUserId,
+        reason,
+        buyOrderMode,
+      });
+      await this.writeAdminAudit(manager, {
+        actorUserId: adminUserId,
+        actionType: AuditActionType.ADMIN_RESOLVE_TRADE_DISPUTE,
+        targetId: trade.id,
+        reason,
+        afterData: {
+          tradeId: trade.id,
+          resolution: TradeDisputeResolution.FORCE_CANCEL,
+          buyOrderMode,
+        },
+        ipAddress,
+      });
+      await this.enqueueTradePartyPushInTransaction(manager, {
+        eventType: NotificationEventType.DISPUTE_RESOLVED,
+        actorUserId: adminUserId,
+        trade,
+      });
+    });
+  }
+
+  private async resolveDisputeResume(
+    adminUserId: string,
+    tradeId: string,
+    reason: string,
+    ipAddress: string | null,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const trade = await this.lockTrade(manager, tradeId);
+      if (trade.status === TradeStatus.WAITING_BUYER_PAYMENT) {
+        return;
+      }
+      if (trade.status !== TradeStatus.DISPUTED) {
+        throw TradeDomainException.invalidStatus();
+      }
+
+      const now = new Date();
+      const previous = trade.status;
+      trade.status = TradeStatus.WAITING_BUYER_PAYMENT;
+      trade.buyerReportedPaidAt = null;
+      trade.sellerConfirmationDueAt = null;
+      trade.buyerPaymentDueAt = new Date(
+        now.getTime() + trade.buyerPaymentTimeoutSeconds * 1000,
+      );
+      await manager.getRepository(TradeEntity).save(trade);
+
+      await this.markDisputeResolvedInTransaction(manager, {
+        tradeId: trade.id,
+        resolution: TradeDisputeResolution.RESUME,
+        reason,
+      });
+      await this.appendEvent(manager, {
+        trade,
+        previousStatus: previous,
+        newStatus: trade.status,
+        eventCode: TradeEventCode.ADMIN_RESUMED_TRADE,
+        actorType: TradeEventActorType.ADMIN,
+        actorUserId: adminUserId,
+        metadata: { reason },
+      });
+      await this.appendEvent(manager, {
+        trade,
+        previousStatus: trade.status,
+        newStatus: trade.status,
+        eventCode: TradeEventCode.DISPUTE_RESOLVED,
+        actorType: TradeEventActorType.ADMIN,
+        actorUserId: adminUserId,
+        metadata: {
+          resolution: TradeDisputeResolution.RESUME,
+          reason,
+        },
+      });
+      await this.writeAdminAudit(manager, {
+        actorUserId: adminUserId,
+        actionType: AuditActionType.ADMIN_RESOLVE_TRADE_DISPUTE,
+        targetId: trade.id,
+        reason,
+        afterData: {
+          tradeId: trade.id,
+          resolution: TradeDisputeResolution.RESUME,
+          status: trade.status,
+        },
+        ipAddress,
+      });
+      await this.enqueueTradePartyPushInTransaction(manager, {
+        eventType: NotificationEventType.DISPUTE_RESOLVED,
+        actorUserId: adminUserId,
+        trade,
+      });
+    });
+  }
+
+  private async markDisputeResolvedInTransaction(
+    manager: EntityManager,
+    input: {
+      tradeId: string;
+      resolution: TradeDisputeResolution;
+      reason: string;
+    },
+  ): Promise<{
+    dispute: TradeDisputeEntity;
+    systemAction: TradeDisputeActionEntity;
+  }> {
+    const dispute = await manager.getRepository(TradeDisputeEntity).findOne({
+      where: { tradeId: input.tradeId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!dispute) {
+      throw TradeDomainException.disputeNotFound();
+    }
+    if (dispute.status === TradeDisputeStatus.RESOLVED) {
+      throw TradeDomainException.disputeAlreadyResolved();
+    }
+    const systemAction = await this.insertSystemDisputeMessageInTransaction(
+      manager,
+      {
+        disputeId: dispute.id,
+        kind: 'RESOLVED',
+        message: DISPUTE_SYSTEM_MESSAGE_CLOSED,
+      },
+    );
+    dispute.status = TradeDisputeStatus.RESOLVED;
+    dispute.resolution = input.resolution;
+    dispute.resolutionReason = input.reason;
+    dispute.resolvedAt = new Date();
+    await manager.getRepository(TradeDisputeEntity).save(dispute);
+    return { dispute, systemAction };
+  }
+
   private async lockTrade(
     manager: EntityManager,
     tradeId: string,
@@ -1525,6 +2314,333 @@ export class TradeService {
       throw TradeDomainException.notFound();
     }
     return trade;
+  }
+
+  private async lockDispute(
+    manager: EntityManager,
+    disputeId: string,
+  ): Promise<TradeDisputeEntity> {
+    const dispute = await manager.getRepository(TradeDisputeEntity).findOne({
+      where: { id: disputeId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!dispute) {
+      throw TradeDomainException.disputeNotFound();
+    }
+    return dispute;
+  }
+
+  private assertDisputeNotTerminal(dispute: TradeDisputeEntity): void {
+    if (
+      dispute.status === TradeDisputeStatus.RESOLVED ||
+      dispute.status === TradeDisputeStatus.CANCELLED
+    ) {
+      throw TradeDomainException.disputeAlreadyResolved();
+    }
+  }
+
+  private assertDisputeWritable(dispute: TradeDisputeEntity): void {
+    if (
+      dispute.status === TradeDisputeStatus.RESOLVED ||
+      dispute.status === TradeDisputeStatus.CANCELLED
+    ) {
+      throw TradeDomainException.disputeClosed();
+    }
+  }
+
+  private async loadDisputeWithTrade(
+    disputeId: string,
+  ): Promise<TradeDisputeEntity> {
+    const dispute = await this.tradeDisputeRepository.findOne({
+      where: { id: disputeId },
+      relations: { trade: true },
+    });
+    if (!dispute?.trade) {
+      throw TradeDomainException.disputeNotFound();
+    }
+    return dispute;
+  }
+
+  private counterpartUserId(trade: TradeEntity, userId: string): string {
+    return trade.buyerUserId === userId
+      ? trade.sellerUserId
+      : trade.buyerUserId;
+  }
+
+  private canChatDispute(status: TradeDisputeStatus): boolean {
+    return OPEN_DISPUTE_STATUSES.includes(status);
+  }
+
+  private disputeActionActorRole(
+    action: TradeDisputeActionEntity,
+    trade: TradeEntity,
+  ): TradeEventActorType {
+    if (action.actorUserId == null) {
+      return TradeEventActorType.SYSTEM;
+    }
+    if (action.actorUserId === trade.buyerUserId) {
+      return TradeEventActorType.BUYER;
+    }
+    if (action.actorUserId === trade.sellerUserId) {
+      return TradeEventActorType.SELLER;
+    }
+    return TradeEventActorType.ADMIN;
+  }
+
+  private toTradeDisputeSummary(dispute: TradeDisputeEntity) {
+    return {
+      id: dispute.id,
+      status: dispute.status,
+      canChat: this.canChatDispute(dispute.status),
+    };
+  }
+
+  private toPartyDisputeDetail(
+    dispute: TradeDisputeEntity,
+  ): PartyDisputeDetailDto {
+    return {
+      ...this.toTradeDisputeSummary(dispute),
+      tradeId: dispute.tradeId,
+      displayName: DISPUTE_TEAM_DISPLAY_NAME,
+    };
+  }
+
+  private toPartyDisputeMessage(
+    action: TradeDisputeActionEntity,
+    trade: TradeEntity,
+    viewerUserId: string,
+    counterpartNickname: string | null,
+  ): PartyDisputeMessageDto {
+    const actorRole = this.disputeActionActorRole(action, trade);
+    const isMine = action.actorUserId === viewerUserId;
+    let displayName = DISPUTE_TEAM_DISPLAY_NAME;
+    if (actorRole === TradeEventActorType.BUYER || actorRole === TradeEventActorType.SELLER) {
+      displayName = isMine ? '나' : maskNickname(counterpartNickname);
+    }
+    return {
+      id: action.id,
+      actionType: action.actionType,
+      actorRole,
+      displayName,
+      isMine,
+      body: action.message ?? '',
+      imageUrl: this.evidenceImageUrl(action),
+      createdAt: action.createdAt,
+    };
+  }
+
+  private toAdminDisputeMessage(
+    action: TradeDisputeActionEntity,
+    trade: TradeEntity,
+  ): AdminDisputeMessageDto {
+    return {
+      id: action.id,
+      actionType: action.actionType,
+      isInternal: action.isInternal,
+      actorUserId: action.actorUserId,
+      actorRole: this.disputeActionActorRole(action, trade),
+      body: action.message ?? '',
+      imageUrl: this.evidenceImageUrl(action),
+      createdAt: action.createdAt,
+    };
+  }
+
+  private evidenceImageUrl(
+    action: TradeDisputeActionEntity,
+  ): string | null {
+    if (action.actionType !== TradeDisputeActionType.EVIDENCE) {
+      return null;
+    }
+    const url = action.metadata?.['url'];
+    return typeof url === 'string' ? url : null;
+  }
+
+  private async insertDisputeActionInTransaction(
+    manager: EntityManager,
+    input: {
+      disputeId: string;
+      actionType: TradeDisputeActionType;
+      actorUserId: string | null;
+      isInternal: boolean;
+      message: string;
+      metadata?: Record<string, unknown> | null;
+    },
+  ): Promise<TradeDisputeActionEntity> {
+    const repository = manager.getRepository(TradeDisputeActionEntity);
+    return repository.save(
+      repository.create({
+        disputeId: input.disputeId,
+        actionType: input.actionType,
+        actorUserId: input.actorUserId,
+        isInternal: input.isInternal,
+        message: input.message,
+        metadata: input.metadata ?? null,
+      }),
+    );
+  }
+
+  private async insertSystemDisputeMessageInTransaction(
+    manager: EntityManager,
+    input: {
+      disputeId: string;
+      kind: 'ASSIGNED' | 'RESOLVED';
+      message: string;
+    },
+  ): Promise<TradeDisputeActionEntity> {
+    return this.insertDisputeActionInTransaction(manager, {
+      disputeId: input.disputeId,
+      actionType: TradeDisputeActionType.MESSAGE,
+      actorUserId: null,
+      isInternal: false,
+      message: input.message,
+      metadata: { kind: input.kind },
+    });
+  }
+
+  private async applyDisputeAssignmentInTransaction(
+    manager: EntityManager,
+    input: {
+      dispute: TradeDisputeEntity;
+      actorUserId: string;
+      assigneeUserId: string;
+      reason: string;
+      ipAddress: string | null;
+    },
+  ): Promise<TradeDisputeActionEntity> {
+    const now = new Date();
+    const previousStatus = input.dispute.status;
+    input.dispute.assignedAdminUserId = input.assigneeUserId;
+    input.dispute.assignedAt = now;
+    if (input.dispute.status === TradeDisputeStatus.OPEN_UNASSIGNED) {
+      input.dispute.status = TradeDisputeStatus.ASSIGNED;
+    }
+    await manager.getRepository(TradeDisputeEntity).save(input.dispute);
+
+    const trade = await this.lockTrade(manager, input.dispute.tradeId);
+    await this.appendEvent(manager, {
+      trade,
+      previousStatus: trade.status,
+      newStatus: trade.status,
+      eventCode: TradeEventCode.DISPUTE_ASSIGNED,
+      actorType: TradeEventActorType.ADMIN,
+      actorUserId: input.actorUserId,
+      metadata: {
+        assignedAdminUserId: input.assigneeUserId,
+        previousDisputeStatus: previousStatus,
+      },
+    });
+    await this.writeAdminAudit(manager, {
+      actorUserId: input.actorUserId,
+      actionType: AuditActionType.ADMIN_ASSIGN_TRADE_DISPUTE,
+      targetId: trade.id,
+      reason: input.reason,
+      afterData: {
+        tradeId: trade.id,
+        disputeId: input.dispute.id,
+        assignedAdminUserId: input.assigneeUserId,
+        status: input.dispute.status,
+      },
+      ipAddress: input.ipAddress,
+    });
+    return this.insertSystemDisputeMessageInTransaction(manager, {
+      disputeId: input.dispute.id,
+      kind: 'ASSIGNED',
+      message: DISPUTE_SYSTEM_MESSAGE_JOINED,
+    });
+  }
+
+  private publishTradeUpdated(tradeId: string): void {
+    void this.tradeRepository
+      .findOne({
+        where: { id: tradeId },
+        select: { id: true, status: true, buyerUserId: true, sellerUserId: true },
+      })
+      .then((trade) => {
+        if (!trade) return;
+        this.tradeRealtime.publishUpdated({
+          tradeId: trade.id,
+          status: trade.status,
+          buyerUserId: trade.buyerUserId,
+          sellerUserId: trade.sellerUserId,
+        });
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `publishTradeUpdated failed trade=${tradeId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+  }
+
+  private publishDisputeOpenedIfPresent(
+    opened: TradeDisputeEntity | null,
+  ): void {
+    if (!opened) return;
+    void this.tradeRepository
+      .findOne({ where: { id: opened.tradeId } })
+      .then((trade) => {
+        this.disputeRealtime.publishDisputeOpened({
+          disputeId: opened.id,
+          tradeId: opened.tradeId,
+          status: opened.status,
+          buyerUserId: trade?.buyerUserId,
+          sellerUserId: trade?.sellerUserId,
+        });
+      });
+  }
+
+  private async publishAssignmentRealtime(
+    disputeId: string,
+    systemAction: TradeDisputeActionEntity | null,
+  ): Promise<void> {
+    const dispute = await this.loadDisputeWithTrade(disputeId);
+    if (systemAction) {
+      void this.disputeRealtime.publishMessageCreated({
+        disputeId,
+        message: this.toAdminDisputeMessage(systemAction, dispute.trade),
+      });
+    }
+    this.disputeRealtime.publishDisputeUpdated({
+      disputeId,
+      tradeId: dispute.tradeId,
+      status: dispute.status,
+    });
+  }
+
+  private async publishDisputeResolvedForTrade(
+    tradeId: string,
+  ): Promise<void> {
+    const dispute = await this.tradeDisputeRepository.findOne({
+      where: { tradeId },
+      relations: { trade: true },
+    });
+    if (!dispute?.trade || dispute.status !== TradeDisputeStatus.RESOLVED) {
+      return;
+    }
+    const recent = await this.tradeDisputeActionRepository.find({
+      where: { disputeId: dispute.id, isInternal: false },
+      order: { createdAt: 'DESC', id: 'DESC' },
+      take: 10,
+    });
+    const systemAction =
+      recent.find(
+        (row) =>
+          row.metadata != null &&
+          typeof row.metadata === 'object' &&
+          (row.metadata as { kind?: string }).kind === 'RESOLVED',
+      ) ?? recent[0];
+    if (systemAction) {
+      void this.disputeRealtime.publishMessageCreated({
+        disputeId: dispute.id,
+        message: this.toAdminDisputeMessage(systemAction, dispute.trade),
+      });
+    }
+    this.disputeRealtime.publishDisputeResolved({
+      disputeId: dispute.id,
+      tradeId: dispute.tradeId,
+      status: dispute.status,
+    });
   }
 
   private assertParty(
@@ -1651,6 +2767,12 @@ export class TradeService {
         isBuyer &&
         (trade.status === TradeStatus.WAITING_BUYER_PAYMENT ||
           trade.status === TradeStatus.PAYMENT_TIMEOUT),
+      canWithdrawPaymentReport:
+        isBuyer &&
+        waitingSeller &&
+        trade.buyerReportedPaidAt != null &&
+        Date.now() - trade.buyerReportedPaidAt.getTime() <=
+          PAYMENT_REPORT_WITHDRAW_WINDOW_MS,
       canConfirmPayment: isSeller && waitingSeller,
       canCancel:
         trade.status === TradeStatus.WAITING_BUYER_PAYMENT &&
@@ -1670,11 +2792,28 @@ export class TradeService {
         refundReported &&
         !codes.has(TradeEventCode.REFUND_CONFIRMED),
       canMarkUnpaid: isSeller && trade.status === TradeStatus.PAYMENT_TIMEOUT,
-      canOpenDispute: false,
+      canDenyPayment: isSeller && waitingSeller,
+      canOpenDispute: isBuyer && waitingSeller,
     };
   }
 
-  private toListItem(trade: TradeEntity, userId: string): TradeListItemDto {
+  private async loadDisputesByTradeIds(
+    tradeIds: string[],
+  ): Promise<Map<string, TradeDisputeEntity>> {
+    if (tradeIds.length === 0) {
+      return new Map();
+    }
+    const disputes = await this.tradeDisputeRepository.find({
+      where: { tradeId: In(tradeIds) },
+    });
+    return new Map(disputes.map((dispute) => [dispute.tradeId, dispute]));
+  }
+
+  private toListItem(
+    trade: TradeEntity,
+    userId: string,
+    dispute: TradeDisputeEntity | null = null,
+  ): TradeListItemDto {
     return {
       tradeId: trade.id,
       tradeNumber: trade.tradeNumber,
@@ -1685,6 +2824,7 @@ export class TradeService {
       status: trade.status,
       coinAmount: trade.coinAmount,
       createdAt: trade.createdAt,
+      dispute: dispute ? this.toTradeDisputeSummary(dispute) : null,
     };
   }
 
@@ -1701,7 +2841,13 @@ export class TradeService {
     const counterpartId =
       role === TradeViewerRole.BUYER ? trade.sellerUserId : trade.buyerUserId;
     const nickname = await this.userService.getNicknameByUserId(counterpartId);
-    const bankName = await this.resolveBankName(trade.sellerBankCode);
+    const bank =
+      role === TradeViewerRole.BUYER
+        ? await this.banksService.resolveDisplayByCode(trade.sellerBankCode)
+        : null;
+    const dispute = await this.tradeDisputeRepository.findOne({
+      where: { tradeId: trade.id },
+    });
 
     return {
       tradeId: trade.id,
@@ -1711,26 +2857,31 @@ export class TradeService {
       coinAmount: trade.coinAmount,
       paymentAmount: trade.paymentAmount,
       payment:
-        role === TradeViewerRole.BUYER
+        role === TradeViewerRole.BUYER && bank
           ? {
-              bankName,
+              bankCode: bank.code,
+              bankName: bank.name,
+              iconUrl: bank.iconUrl,
               accountNumber: trade.sellerAccountNumber,
               accountHolderName: trade.sellerAccountHolderName,
               dueAt: trade.buyerPaymentDueAt,
             }
           : null,
       counterparty: { nickname: maskNickname(nickname) },
+      dispute: dispute ? this.toTradeDisputeSummary(dispute) : null,
       actions: this.computeActions(trade, role, events),
       buyerPaymentDueAt: trade.buyerPaymentDueAt,
       sellerConfirmationDueAt: trade.sellerConfirmationDueAt,
       createdAt: trade.createdAt,
+      cancelledAt: trade.cancelledAt,
+      cancellationReason: trade.cancellationReason,
       ...flags,
     };
   }
 
   private async resolveBankName(bankCode: string): Promise<string> {
-    const bank = await this.banksService.findByCode(bankCode);
-    return bank?.name ?? bankCode;
+    const bank = await this.banksService.resolveDisplayByCode(bankCode);
+    return bank.name;
   }
 
   private createAdminTradeListQueryBuilder(): SelectQueryBuilder<TradeEntity> {
@@ -1753,6 +2904,12 @@ export class TradeService {
       qb.andWhere('trade.seller_user_id = :sellerUserId', {
         sellerUserId: query.sellerUserId,
       });
+    }
+    if (query.partyUserId) {
+      qb.andWhere(
+        '(trade.buyer_user_id = :partyUserId OR trade.seller_user_id = :partyUserId)',
+        { partyUserId: query.partyUserId },
+      );
     }
     if (query.createdFrom) {
       qb.andWhere('trade.created_at >= :createdFrom', {
@@ -1845,6 +3002,133 @@ export class TradeService {
       sellerConfirmationDueAt: row.sellerConfirmationDueAt,
       buyerReportedPaidAt: row.buyerReportedPaidAt,
       createdAt: row.createdAt,
+    };
+  }
+
+  private applyAdminDisputeListFilters(
+    qb: SelectQueryBuilder<TradeDisputeEntity>,
+    query: SearchAdminDisputesDto,
+    actorUserId: string,
+  ): void {
+    if (query.status) {
+      qb.andWhere('dispute.status = :status', { status: query.status });
+    } else {
+      qb.andWhere('dispute.status IN (:...openStatuses)', {
+        openStatuses: OPEN_DISPUTE_STATUSES,
+      });
+    }
+    if (query.reasonCode) {
+      qb.andWhere('dispute.reason_code = :reasonCode', {
+        reasonCode: query.reasonCode,
+      });
+    }
+    if (query.priority) {
+      qb.andWhere('dispute.priority = :priority', {
+        priority: query.priority,
+      });
+    }
+    if (query.assignee === 'unassigned') {
+      qb.andWhere('dispute.assigned_admin_user_id IS NULL');
+    } else if (query.assignee === 'me') {
+      qb.andWhere('dispute.assigned_admin_user_id = :assigneeId', {
+        assigneeId: actorUserId,
+      });
+    } else if (query.assignee) {
+      qb.andWhere('dispute.assigned_admin_user_id = :assigneeId', {
+        assigneeId: query.assignee,
+      });
+    }
+    if (query.keyword?.trim()) {
+      qb.andWhere(
+        `(
+          dispute.dispute_number ILIKE :like
+          OR trade.trade_number ILIKE :like
+        )`,
+        { like: `%${query.keyword.trim()}%` },
+      );
+    }
+    if (query.partyUserId) {
+      qb.andWhere(
+        '(trade.buyer_user_id = :partyUserId OR trade.seller_user_id = :partyUserId)',
+        { partyUserId: query.partyUserId },
+      );
+    }
+  }
+
+  private toAdminTradeDispute(dispute: TradeDisputeEntity): AdminTradeDisputeDto {
+    return {
+      id: dispute.id,
+      disputeNumber: dispute.disputeNumber,
+      status: dispute.status,
+      priority: dispute.priority,
+      reasonCode: dispute.reasonCode,
+      requestedAt: dispute.requestedAt,
+      assignedAdminUserId: dispute.assignedAdminUserId,
+      assignedAt: dispute.assignedAt,
+    };
+  }
+
+  private toAdminDisputeListItem(
+    row: TradeDisputeEntity,
+    parties: Map<string, AdminPartySummary>,
+  ): AdminDisputeListItemDto {
+    const trade = row.trade;
+    return {
+      id: row.id,
+      disputeNumber: row.disputeNumber,
+      tradeId: row.tradeId,
+      tradeNumber: trade.tradeNumber,
+      status: row.status,
+      priority: row.priority,
+      reasonCode: row.reasonCode,
+      buyer: this.userService.toAdminPartyDto(parties.get(trade.buyerUserId)),
+      seller: this.userService.toAdminPartyDto(parties.get(trade.sellerUserId)),
+      paymentAmount: trade.paymentAmount,
+      coinAmount: trade.coinAmount,
+      assignedAdminUserId: row.assignedAdminUserId,
+      requestedAt: row.requestedAt,
+      resolution: row.resolution,
+      resolvedAt: row.resolvedAt,
+    };
+  }
+
+  private async toAdminDisputeDetail(
+    dispute: TradeDisputeEntity,
+  ): Promise<AdminDisputeDetailDto> {
+    const trade = dispute.trade;
+    if (!trade) {
+      throw TradeDomainException.notFound();
+    }
+    const [events, bankName, parties] = await Promise.all([
+      this.loadEvents(trade.id),
+      this.resolveBankName(trade.sellerBankCode),
+      this.userService.getAdminPartySummaries([
+        trade.buyerUserId,
+        trade.sellerUserId,
+      ]),
+    ]);
+    const listItem = this.toAdminDisputeListItem(dispute, parties);
+    return {
+      ...listItem,
+      assignedAt: dispute.assignedAt,
+      trade: {
+        id: trade.id,
+        tradeNumber: trade.tradeNumber,
+        status: trade.status,
+        coinAmount: trade.coinAmount,
+        paymentAmount: trade.paymentAmount,
+        buyer: listItem.buyer,
+        seller: listItem.seller,
+        sellerBankAccount: {
+          bankCode: trade.sellerBankCode,
+          bankName,
+          accountNumber: maskAccountNumber(trade.sellerAccountNumber),
+          holderName: trade.sellerAccountHolderName,
+        },
+        buyerReportedPaidAt: trade.buyerReportedPaidAt,
+        sellerConfirmationDueAt: trade.sellerConfirmationDueAt,
+        events: events.map((event) => this.toAdminTradeEvent(event)),
+      },
     };
   }
 

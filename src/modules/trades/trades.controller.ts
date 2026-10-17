@@ -23,6 +23,7 @@ import {
   CancelTradeDto,
   CancellationRequestDto,
 } from './dto/cancel-trade.dto';
+import { OpenTradeDisputeDto } from './dto/admin-trade-command.dto';
 import { SearchMyTradesDto } from './dto/search-trades.dto';
 import { TradeResponseDto } from './dto/trade-response.dto';
 import { TradeService } from './trade.service';
@@ -62,6 +63,17 @@ export class TradesController {
     @Param('tradeId', ParseUUIDPipe) tradeId: string,
   ): Promise<TradeResponseDto> {
     return this.tradeService.reportPayment(user.userId, tradeId);
+  }
+
+  @Post(':tradeId/withdraw-payment-report')
+  @HttpCode(200)
+  @ApiOperation({ summary: '구매자 입금 신고 철회 (10분·판매자 미확인)' })
+  @ApiOkResponse({ type: TradeResponseDto })
+  withdrawPaymentReport(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('tradeId', ParseUUIDPipe) tradeId: string,
+  ): Promise<TradeResponseDto> {
+    return this.tradeService.withdrawPaymentReport(user.userId, tradeId);
   }
 
   @Post(':tradeId/confirm-payment')
@@ -145,5 +157,32 @@ export class TradesController {
     @Param('tradeId', ParseUUIDPipe) tradeId: string,
   ): Promise<TradeResponseDto> {
     return this.tradeService.markUnpaid(user.userId, tradeId);
+  }
+
+  @Post(':tradeId/deny-payment')
+  @HttpCode(200)
+  @ApiOperation({ summary: '판매자 입금 미수신 → 분쟁' })
+  @ApiOkResponse({ type: TradeResponseDto })
+  denyPayment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('tradeId', ParseUUIDPipe) tradeId: string,
+  ): Promise<TradeResponseDto> {
+    return this.tradeService.denyPayment(user.userId, tradeId);
+  }
+
+  @Post(':tradeId/disputes')
+  @HttpCode(200)
+  @ApiOperation({ summary: '구매자 분쟁 제기' })
+  @ApiOkResponse({ type: TradeResponseDto })
+  openDispute(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('tradeId', ParseUUIDPipe) tradeId: string,
+    @Body() dto: OpenTradeDisputeDto,
+  ): Promise<TradeResponseDto> {
+    return this.tradeService.openPartyDispute(
+      user.userId,
+      tradeId,
+      dto.reason,
+    );
   }
 }
