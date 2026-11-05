@@ -81,6 +81,6 @@ BuyOrder MATCHING
 ## 다음 (제안 · M0 확정)
 
 판매자 수락 후 Trade + 구매자 PWA Push: [p0-5b-seller-accept.md](./p0-5b-seller-accept.md),  
-[trade-seller-accept-flow.md](../../../brit-front/docs/porcess/trade-seller-accept-flow.md) (v0.3 M0).
+[trade-seller-accept-flow.md](../../../brit-front/docs/process/trade-seller-accept-flow.md) (v0.4 M0).
 
 다음 구현: M1 `trade_requests` Migration + Apply TX.

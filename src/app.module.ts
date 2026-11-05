@@ -18,6 +18,7 @@ import { MarketModule } from './modules/market/market.module';
 import { MatchingModule } from './modules/matching/matching.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { PartnersModule } from './modules/partners/partners.module';
 import { TradesModule } from './modules/trades/trades.module';
 import { UsersModule } from './modules/users/users.module';
 
@@ -46,6 +47,7 @@ import { UsersModule } from './modules/users/users.module';
     UsersModule,
     AdminsModule,
     BanksModule,
+    PartnersModule,
     NotificationsModule,
     CoinsModule,
     TradesModule,

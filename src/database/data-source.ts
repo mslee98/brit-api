@@ -36,6 +36,19 @@ import { UserConsentEntity } from '../modules/users/infrastructure/entities/user
 import { UserProfileEntity } from '../modules/users/infrastructure/entities/user-profile.entity';
 import { UserRoleEntity } from '../modules/users/infrastructure/entities/user-role.entity';
 import { UserEntity } from '../modules/users/infrastructure/entities/user.entity';
+import { PartnerAssetEntity } from '../modules/partners/infrastructure/entities/partner-asset.entity';
+import { PartnerClientOriginEntity } from '../modules/partners/infrastructure/entities/partner-client-origin.entity';
+import { PartnerClientScopeEntity } from '../modules/partners/infrastructure/entities/partner-client-scope.entity';
+import { PartnerClientSecretEntity } from '../modules/partners/infrastructure/entities/partner-client-secret.entity';
+import { PartnerClientEntity } from '../modules/partners/infrastructure/entities/partner-client.entity';
+import { PartnerCoinLedgerEntryEntity } from '../modules/partners/infrastructure/entities/partner-coin-ledger-entry.entity';
+import { PartnerCoinWalletEntity } from '../modules/partners/infrastructure/entities/partner-coin-wallet.entity';
+import { PartnerExchangeEntity } from '../modules/partners/infrastructure/entities/partner-exchange.entity';
+import { PartnerFeeAccrualEntity } from '../modules/partners/infrastructure/entities/partner-fee-accrual.entity';
+import { PartnerFeePolicyEntity } from '../modules/partners/infrastructure/entities/partner-fee-policy.entity';
+import { PartnerMemberEntity } from '../modules/partners/infrastructure/entities/partner-member.entity';
+import { PartnerEntity } from '../modules/partners/infrastructure/entities/partner.entity';
+import { UserPartnerLinkEntity } from '../modules/partners/infrastructure/entities/user-partner-link.entity';
 
 /** Nest ConfigModule과 동일: `.env.local` 우선, 이어서 `.env` */
 for (const file of ['.env.local', '.env']) {
@@ -85,6 +98,19 @@ export default new DataSource({
     TradeDisputeActionEntity,
     MatchingAttemptEntity,
     TradeRequestEntity,
+    PartnerEntity,
+    PartnerMemberEntity,
+    PartnerClientEntity,
+    PartnerClientSecretEntity,
+    PartnerClientScopeEntity,
+    PartnerClientOriginEntity,
+    UserPartnerLinkEntity,
+    PartnerAssetEntity,
+    PartnerExchangeEntity,
+    PartnerFeePolicyEntity,
+    PartnerFeeAccrualEntity,
+    PartnerCoinWalletEntity,
+    PartnerCoinLedgerEntryEntity,
   ],
   migrations: ['src/database/migrations/*.ts'],
   synchronize: true,

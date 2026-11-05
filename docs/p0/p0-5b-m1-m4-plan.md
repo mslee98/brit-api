@@ -1,7 +1,7 @@
 # P0-5b M1~M4 구현 계획 (백엔드 뼈대)
 
 > **상태:** M1~M4 완료 (백엔드 코어 Done). Push·Front는 M5+.  
-> **정책 SoT (M0):** [trade-seller-accept-flow.md](../../../brit-front/docs/porcess/trade-seller-accept-flow.md)  
+> **정책 SoT (M0):** [trade-seller-accept-flow.md](../../../brit-front/docs/process/trade-seller-accept-flow.md)  
 > **요약 메모:** [p0-5b-seller-accept.md](./p0-5b-seller-accept.md)  
 > **현재 코드:** Apply→Accept/Reject/Cancel/Expire + release 단일화. `POST /match` 병행.
 
@@ -319,7 +319,7 @@ Push·SellOrderDetail UI는 **이 검증 통과 후** M5~.
 ## Agent 작업 규칙 (구현 중)
 
 1. **순서 고정:** M1 → M2 → M3 → M4. 앞 마일스톤 완료 기준 없이 다음으로 넘어가지 않는다.
-2. **정책 충돌 시:** [trade-seller-accept-flow.md](../../../brit-front/docs/porcess/trade-seller-accept-flow.md) M0를 우선한다. TX 순서·상태 전이는 본 계획의 표를 그대로 따른다.
+2. **정책 충돌 시:** [trade-seller-accept-flow.md](../../../brit-front/docs/process/trade-seller-accept-flow.md) M0를 우선한다. TX 순서·상태 전이는 본 계획의 표를 그대로 따른다.
 3. **범위 밖:** Push·Front·로켓·`/match` 삭제·Outbox는 M5+ (본 문서 M1~M4에서 하지 말 것).
 4. **패턴:** `docs/p0/README.md` + 기존 Matching/Orders Entity·Exception·TX lock 패턴을 따른다. 새 계층(use-case 등) 금지.
 5. **완료 후:** 본 계획의 Done 체크를 충족하면 [p0-5b-seller-accept.md](./p0-5b-seller-accept.md)를 “현재 구현 기준”으로 격상하고 [p0-5-matching.md](./p0-5-matching.md)를 개정한다.

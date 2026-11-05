@@ -9,7 +9,7 @@ alwaysApply: false
 Apply → Accept/Reject/Cancel/Expire 백엔드 작업을 할 때 **구현 전에** 아래를 Read한다.
 
 1. **작업 지시서:** `docs/p0/p0-5b-m1-m4-plan.md` — TX 순서·Done 기준·하지 말 것
-2. **정책 SoT (M0):** `brit-front/docs/porcess/trade-seller-accept-flow.md`
+2. **정책 SoT (M0):** `brit-front/docs/process/trade-seller-accept-flow.md`
 3. **요약:** `docs/p0/p0-5b-seller-accept.md`
 4. **현재 코드:** `docs/p0/p0-5-matching.md`
 

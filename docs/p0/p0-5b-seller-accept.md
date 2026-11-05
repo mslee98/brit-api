@@ -2,7 +2,7 @@
 
 > **상태:** M0 정책 + **M1~M4 코드 구현** (Apply→Accept/Reject/Cancel/Expire).  
 > **병행:** [p0-5-matching.md](./p0-5-matching.md)의 `POST /match`는 아직 유지. 전면 개편은 M10.  
-> **전문(UX·TX·테스트):** [trade-seller-accept-flow.md](../../../brit-front/docs/porcess/trade-seller-accept-flow.md) **v0.3**  
+> **전문(UX·TX·테스트):** [trade-seller-accept-flow.md](../../../brit-front/docs/process/trade-seller-accept-flow.md) **v0.4**  
 > **작업 지시서:** [p0-5b-m1-m4-plan.md](./p0-5b-m1-m4-plan.md)
 
 ## 요약

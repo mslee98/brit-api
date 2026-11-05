@@ -3,7 +3,7 @@
 입금 신고 후 불일치·판매자 무응답을 `DISPUTED`로 올리고, CS가 `resolve`로만 원장·취소를 닫는다.  
 **M1:** 진입 API + 판결 API. **M2:** 분쟁 큐·배정·어드민 인박스. **M3:** `trade_dispute_actions` 삼자 채팅(REST + Socket `/disputes`). 증빙·매크로는 M4.
 
-정책 UX 전문: [brit-front/docs/porcess/trade-disputes.md](../../../brit-front/docs/porcess/trade-disputes.md).  
+정책 UX 전문: [brit-front/docs/process/trade-disputes.md](../../../brit-front/docs/process/trade-disputes.md).  
 정상 Trade 진행: [p0-6-trade.md](./p0-6-trade.md).
 
 ## 상황 분류
@@ -192,4 +192,4 @@ takeover: 열린 건이면 담당자 교체. 같은 담당자면 멱등 200.
 - CS 매크로 — `GET /admin/disputes/macros` 정적 시드.
 - (제외) `FORCE_REVERSAL`, 은행 OCR
 
-사용자·관리자 **화면 갭**(채팅 자동 입장·복귀·드롭·미배정 강조): [trade-disputes.md §9](../../../brit-front/docs/porcess/trade-disputes.md). API 완료와 UX 완료를 구분한다.
+사용자·관리자 **화면 갭**(채팅 자동 입장·복귀·드롭·미배정 강조): [trade-disputes.md §9](../../../brit-front/docs/process/trade-disputes.md). API 완료와 UX 완료를 구분한다.

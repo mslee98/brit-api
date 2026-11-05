@@ -18,7 +18,7 @@ P0-1 ~ P0-6까지 **실제로 들어간 코드**를 이후 작업에서 참조�
 
 다음 예정: **P0-5b M5~M7** (Front·Push). P0-5b M1~M4 백엔드 코어는 완료. P0-7 M3 Socket·M4 철회/매크로/증빙까지 완료.
 
-UX·정책 전문: [brit-front/docs/porcess/trade-seller-accept-flow.md](../../../brit-front/docs/porcess/trade-seller-accept-flow.md).
+UX·정책 전문: [brit-front/docs/process/trade-seller-accept-flow.md](../../../brit-front/docs/process/trade-seller-accept-flow.md).
 
 ---
 

@@ -386,17 +386,17 @@ ADMIN/SYS_ADMIN의 운영 속성을 간단하게 관리한다.
 | id | UUID PK |
 | code | VARCHAR(30) UNIQUE |
 | name | VARCHAR(100) |
-| business_registration_number | VARCHAR(30) NULL |
 | status | partner_status |
-| is_public | BOOLEAN |
-| public_approved_at | TIMESTAMPTZ NULL |
-| public_approved_by_user_id | UUID FK NULL |
-| contact_name | VARCHAR(50) NULL |
-| contact_phone | VARCHAR(30) NULL |
-| contact_email | VARCHAR(100) NULL |
+| contact_name | VARCHAR(50) |
+| contact_phone | VARCHAR(30) |
+| contact_email | VARCHAR(100) |
+| contact_telegram | VARCHAR(100) NULL |
 | memo | TEXT NULL |
 | created_at | TIMESTAMPTZ |
 | updated_at | TIMESTAMPTZ |
+
+`partner_status`: `ACTIVE` / `SUSPENDED` / `TERMINATED`  
+관리자 등록 즉시 `ACTIVE`. 사업자등록번호·공개 스토어 플래그는 MVP 제외.
 
 배너 테이블은 MVP 제외.
 
@@ -415,13 +415,35 @@ ADMIN/SYS_ADMIN의 운영 속성을 간단하게 관리한다.
 | created_at | TIMESTAMPTZ |
 | updated_at | TIMESTAMPTZ |
 
+`partner_member_role`: `OWNER` / `MANAGER`  
+`partner_member_status`: `ACTIVE` / `REMOVED`
+
+제약:
+
+- UNIQUE partial `(user_id) WHERE status = 'ACTIVE'` — 사용자당 활성 소속 1개
+- UNIQUE partial `(partner_id, user_id) WHERE status = 'ACTIVE'`
+- INDEX `(partner_id, status)`
+
+정책: ACTIVE 사용자만 연결. SUSPENDED 업체에 추가 가능. TERMINATED는 변경·해제만.  
+온보딩 SoT: `docs/p0/p0-partner-admin-onboarding.md`
+
 ## 6.3 partner_clients
 
 `id, partner_id, client_id UNIQUE, client_type, environment, name, webhook_url, status, created_at, updated_at`
 
+- `environment`: SANDBOX / PRODUCTION
+- `client_type`: SERVER / PUBLIC_SDK
+- `status`: ACTIVE / SUSPENDED / REVOKED
+
+1차 마이그레이션에 스키마만 포함. 발급 API는 후속.
+
 ## 6.4 partner_client_secrets
 
 `id, partner_client_id, secret_type, secret_hash, status, expires_at, created_at, revoked_at`
+
+- `secret_type`: API_SECRET / WEBHOOK_SECRET
+- `status`: ACTIVE / REVOKED  
+원문 Secret은 저장하지 않는다.
 
 ## 6.5 partner_client_scopes
 
@@ -478,7 +500,7 @@ MVP는 기본 1 Coin = 1 Point.
 |---|---|
 | id | UUID PK |
 | exchange_number | VARCHAR(40) UNIQUE |
-| idempotency_key | VARCHAR(100) UNIQUE |
+| idempotency_key | VARCHAR(100) | UNIQUE with partner_id — `(partner_id, idempotency_key)` |
 | user_partner_link_id | UUID FK |
 | user_id | UUID FK |
 | partner_id | UUID FK |
