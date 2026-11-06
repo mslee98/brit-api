@@ -198,6 +198,7 @@ describe('MatchingService (Browse+Select)', () => {
             publishSellOrder: jest.fn(),
             publishTradeRequest: jest.fn(),
             publishMatchingChanged: jest.fn(),
+            publishMatchingChangedForRequest: jest.fn(),
           },
         },
         {
@@ -209,7 +210,7 @@ describe('MatchingService (Browse+Select)', () => {
                   {
                     nickname: '테스터',
                     completed_count: 0,
-                    settled_count: 0,
+                    buyer_cancel_count: 0,
                   },
                 ],
                 getRepository: (entity: unknown) => {
@@ -339,7 +340,7 @@ describe('MatchingService (Browse+Select)', () => {
               {
                 nickname: '테스터',
                 completed_count: 0,
-                settled_count: 0,
+                buyer_cancel_count: 0,
               },
             ],
           },

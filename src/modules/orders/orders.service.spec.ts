@@ -200,6 +200,29 @@ describe('P0-4 Buy/Sell Orders', () => {
               },
               findAndCount: async () => [[...store.sellOrders.values()], store.sellOrders.size],
               find: async () => [...store.sellOrders.values()],
+              // hasActiveSellOrder — 대기 요청은 이 mock에 없으므로 잔량만 본다
+              createQueryBuilder: () => {
+                let sellerUserId = '';
+                const qb = {
+                  where: (_sql: string, params: { sellerUserId: string }) => {
+                    sellerUserId = params.sellerUserId;
+                    return qb;
+                  },
+                  andWhere: () => qb,
+                  getExists: async () =>
+                    [...store.sellOrders.values()].some(
+                      (o) =>
+                        o.sellerUserId === sellerUserId &&
+                        [
+                          SellOrderStatus.OPEN,
+                          SellOrderStatus.PARTIALLY_MATCHED,
+                          SellOrderStatus.FULLY_RESERVED,
+                        ].includes(o.status) &&
+                        BigInt(o.remainingCoinAmount) > 0n,
+                    ),
+                };
+                return qb;
+              },
             };
           }
           if (entity === SellOrderCoinLotEntity) {
@@ -413,6 +436,41 @@ describe('P0-4 Buy/Sell Orders', () => {
 
     expect(store.sellOrders.size).toBe(0);
     expect(store.sellAllocs).toHaveLength(0);
+  });
+
+  it('rejects a second sell order while one is active', async () => {
+    await sellService.createSellOrder(
+      userId,
+      { coinAmount: '200000' },
+      'idem-sell-active-1',
+    );
+
+    await expect(
+      sellService.createSellOrder(
+        userId,
+        { coinAmount: '100000' },
+        'idem-sell-active-2',
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'ACTIVE_SELL_ORDER_EXISTS' },
+    });
+    expect(store.sellOrders.size).toBe(1);
+  });
+
+  it('allows a new sell order after the previous one is cancelled', async () => {
+    const first = await sellService.createSellOrder(
+      userId,
+      { coinAmount: '200000' },
+      'idem-sell-after-cancel-1',
+    );
+    await sellService.cancelSellOrder(userId, first.id);
+
+    const second = await sellService.createSellOrder(
+      userId,
+      { coinAmount: '100000' },
+      'idem-sell-after-cancel-2',
+    );
+    expect(second.status).toBe(SellOrderStatus.OPEN);
   });
 
   it('Case3: cancel unlocks full remaining', async () => {

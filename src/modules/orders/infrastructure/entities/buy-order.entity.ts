@@ -24,6 +24,9 @@ import { BuyOrderStatus } from '../../domain/enums/buy-order-status.enum';
   unique: true,
   where: '"idempotency_key" IS NOT NULL',
 })
+@Index('ix_buy_orders_matching_amount', ['coinAmount'], {
+  where: `"status" = 'MATCHING'`,
+})
 @Check('ck_buy_orders_coin_amount', '"coin_amount" > 0')
 @Check('ck_buy_orders_rematch_count', '"rematch_count" >= 0')
 @Check(

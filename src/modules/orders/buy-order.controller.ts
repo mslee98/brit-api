@@ -23,6 +23,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import {
   ApplyBuyOrderResponseDto,
+  ApplyBuyOrderDto,
+  CreateMarketTradeRequestDto,
   MatchBuyOrderDto,
   MatchBuyOrderResponseDto,
   MatchingCandidatesResponseDto,
@@ -93,6 +95,28 @@ export class BuyOrderController {
     return this.buyOrderService.listCandidates(user.userId, orderId, query);
   }
 
+  @Post('market-request')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: '거래소 판매글에 거래 요청 (BuyOrder 생성 + Apply 원자 처리)',
+  })
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  @ApiOkResponse({ type: ApplyBuyOrderResponseDto })
+  requestFromMarket(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateMarketTradeRequestDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<ApplyBuyOrderResponseDto> {
+    if (!idempotencyKey?.trim()) {
+      throw OrderDomainException.idempotencyKeyRequired();
+    }
+    return this.buyOrderService.requestFromMarket(
+      user.userId,
+      dto,
+      idempotencyKey.trim(),
+    );
+  }
+
   @Post(':orderId/match')
   @HttpCode(200)
   @ApiOperation({ summary: '판매자 선택 및 Trade 생성' })
@@ -113,7 +137,7 @@ export class BuyOrderController {
   apply(
     @CurrentUser() user: AuthenticatedUser,
     @Param('orderId', ParseUUIDPipe) orderId: string,
-    @Body() dto: MatchBuyOrderDto,
+    @Body() dto: ApplyBuyOrderDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<ApplyBuyOrderResponseDto> {
     if (!idempotencyKey?.trim()) {

@@ -1,9 +1,18 @@
-import { Controller, Get, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { MarketSellOrderQueryDto } from './dto/market-sell-order-query.dto';
 import {
   MarketSellOrderListResponseDto,
+  MarketSellerDto,
 } from './dto/market-sell-order-response.dto';
 import { MarketSummaryResponseDto } from './dto/market-summary-response.dto';
 import { MarketService } from './market.service';
@@ -35,5 +44,20 @@ export class MarketController {
     @Query() query: MarketSellOrderQueryDto,
   ): Promise<MarketSellOrderListResponseDto> {
     return this.marketService.listSellOrders(query);
+  }
+
+  @Get('sellers/me')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: '거래소에 보이는 내 판매자 정보',
+    description:
+      '구매자가 거래소 카드에서 보는 것과 같은 값(마스킹 닉네임·완료 거래·완료율·분쟁)을 반환합니다.',
+  })
+  @ApiOkResponse({ type: MarketSellerDto })
+  getMySellerProfile(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<MarketSellerDto> {
+    return this.marketService.getMySellerProfile(user.userId);
   }
 }

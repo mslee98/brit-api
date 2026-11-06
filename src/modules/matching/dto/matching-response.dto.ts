@@ -15,6 +15,7 @@ import {
 import { BuyMatchType } from '../../orders/domain/enums/buy-match-type.enum';
 import { BuyOrderStatus } from '../../orders/domain/enums/buy-order-status.enum';
 import { TradeStatus } from '../../trades/domain/enums/trade-status.enum';
+import { TradeRequestOrigin } from '../domain/enums/trade-request-origin.enum';
 import { TradeRequestRejectionReason } from '../domain/enums/trade-request-rejection-reason.enum';
 import { TradeRequestStatus } from '../domain/enums/trade-request-status.enum';
 import { TradeRequestEntity } from '../infrastructure/entities/trade-request.entity';
@@ -39,6 +40,37 @@ export class MatchBuyOrderDto {
   @MaxLength(20)
   @Matches(/^[1-9]\d*$/)
   expectedCoinAmount!: string;
+}
+
+/** 거래소 판매글 요청 — 판매 잔량 전체를 정확 매칭으로 요청한다 */
+export class CreateMarketTradeRequestDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsString()
+  @MinLength(36)
+  @MaxLength(36)
+  sellOrderId!: string;
+
+  @ApiProperty({
+    description: '목록 조회 시점의 판매 remaining (bigint string)',
+    example: '500000',
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(20)
+  @Matches(/^[1-9]\d*$/)
+  expectedCoinAmount!: string;
+}
+
+export class ApplyBuyOrderDto extends MatchBuyOrderDto {
+  @ApiPropertyOptional({
+    enum: TradeRequestOrigin,
+    default: TradeRequestOrigin.MATCHING,
+    description:
+      'MARKET이면 거절·만료·취소 시 BuyOrder를 CANCELLED로 닫는다 (MATCHING 탐색 복귀 없음)',
+  })
+  @IsOptional()
+  @IsEnum(TradeRequestOrigin)
+  origin?: TradeRequestOrigin;
 }
 
 export class MatchResultDto {
@@ -121,11 +153,12 @@ export class TradeRequestBuyerSummaryDto {
   @ApiProperty({ description: 'COMPLETED 거래 수' })
   completedTradeCount!: number;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
+    nullable: true,
     description:
-      '0~100. settled(COMPLETED+CANCELLED)=0이면 100, 아니면 floor(completed/settled*100)',
+      '0~100. floor(completed / (completed + 구매자 귀책 취소) * 100). 구매자 귀책 취소 = 입금 전 구매자 취소·입금 시한 초과 후 미입금 확정. 판매자 취소·합의·분쟁 강제 취소는 제외. 분모 0이면 null',
   })
-  completionRate!: number;
+  completionRate!: number | null;
 }
 
 export class TradeRequestResponseDto {
@@ -140,6 +173,9 @@ export class TradeRequestResponseDto {
 
   @ApiProperty({ enum: TradeRequestStatus })
   status!: TradeRequestStatus;
+
+  @ApiProperty({ enum: TradeRequestOrigin })
+  origin!: TradeRequestOrigin;
 
   @ApiProperty({ type: MatchResultDto })
   match!: MatchResultDto;
@@ -169,6 +205,7 @@ export class TradeRequestResponseDto {
     dto.buyOrderId = request.buyOrderId;
     dto.sellOrderId = request.sellOrderId;
     dto.status = request.status;
+    dto.origin = request.origin ?? TradeRequestOrigin.MATCHING;
     dto.match = {
       type: request.matchType,
       coinAmount: request.requestedCoinAmount,

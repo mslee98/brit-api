@@ -19,6 +19,10 @@ import { NotificationEventType } from '../notifications/domain/enums/notificatio
 import { NotificationReferenceType } from '../notifications/domain/enums/notification-reference-type.enum';
 import { NotificationService } from '../notifications/notification.service';
 import { TradeStatus } from '../trades/domain/enums/trade-status.enum';
+import {
+  computeCompletionRatePct,
+  faultCancelledTradeSql,
+} from '../trades/domain/trade-completion-rate';
 import { TradeEntity } from '../trades/infrastructure/entities/trade.entity';
 import { TradeService } from '../trades/trade.service';
 import { maskNickname } from '../trades/utils/nickname-mask.util';
@@ -31,11 +35,14 @@ import {
   CANDIDATE_MAX_LIMIT,
 } from './domain/constants/matching.constants';
 import { MatchingAttemptResult } from './domain/enums/matching-attempt-result.enum';
+import { TradeRequestOrigin } from './domain/enums/trade-request-origin.enum';
 import { TradeRequestRejectionReason } from './domain/enums/trade-request-rejection-reason.enum';
 import { TradeRequestStatus } from './domain/enums/trade-request-status.enum';
+import { sellRangeForBuy } from './domain/near-match-range';
 import {
   AcceptTradeRequestResponseDto,
   ApplyBuyOrderResponseDto,
+  ApplyBuyOrderDto,
   MatchBuyOrderDto,
   MatchBuyOrderResponseDto,
   MatchingCandidateItemDto,
@@ -95,6 +102,7 @@ export class MatchingService {
     buyOrderId: string,
     dto: MatchBuyOrderDto,
   ): Promise<MatchBuyOrderResponseDto> {
+    const previousSellRemaining: string[] = [];
     const matched = await this.dataSource.transaction(async (manager) => {
       const buyOrderRepository = manager.getRepository(BuyOrderEntity);
       const buyOrder = await buyOrderRepository.findOne({
@@ -163,6 +171,7 @@ export class MatchingService {
       sellOrder.reservedCoinAmount = nextReserved.toString();
       sellOrder.status = deriveSellOrderStatus(nextRemaining, nextReserved);
       await manager.getRepository(SellOrderEntity).save(sellOrder);
+      previousSellRemaining.push(remaining.toString());
 
       const now = new Date();
       const lotAllocations = await this.allocateTradeCoinLotsFifo(
@@ -223,7 +232,10 @@ export class MatchingService {
     });
     this.orderRealtime.publishBuyOrder(buyOrderId);
     this.orderRealtime.publishSellOrder(dto.sellOrderId);
-    this.orderRealtime.publishMatchingChanged();
+    this.orderRealtime.publishMatchingChanged(
+      dto.sellOrderId,
+      previousSellRemaining,
+    );
     return matched;
   }
 
@@ -234,167 +246,193 @@ export class MatchingService {
   async applyToSellOrder(
     buyerUserId: string,
     buyOrderId: string,
-    dto: MatchBuyOrderDto,
+    dto: ApplyBuyOrderDto,
+    idempotencyKey: string,
+  ): Promise<ApplyBuyOrderResponseDto> {
+    const applied = await this.dataSource.transaction((manager) =>
+      this.applyToSellOrderInTransaction(
+        manager,
+        buyerUserId,
+        buyOrderId,
+        dto,
+        idempotencyKey,
+      ),
+    );
+    this.publishTradeRequestApplied(applied.tradeRequestId);
+    return applied;
+  }
+
+  /** 커밋 후 호출 — 판매자 대기 화면·후보 피드 갱신 */
+  publishTradeRequestApplied(tradeRequestId: string): void {
+    this.orderRealtime.publishTradeRequest(tradeRequestId);
+    this.orderRealtime.publishMatchingChangedForRequest(tradeRequestId);
+  }
+
+  /**
+   * Apply 본문. 호출자 트랜잭션 안에서 실행되며 실시간 발행은 하지 않는다
+   * (커밋 후 publishTradeRequestApplied).
+   */
+  async applyToSellOrderInTransaction(
+    manager: EntityManager,
+    buyerUserId: string,
+    buyOrderId: string,
+    dto: ApplyBuyOrderDto,
     idempotencyKey: string,
   ): Promise<ApplyBuyOrderResponseDto> {
     const key = idempotencyKey.trim();
 
-    const applied = await this.dataSource.transaction(async (manager) => {
-      const buyOrderRepository = manager.getRepository(BuyOrderEntity);
-      const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
-      const sellOrderRepository = manager.getRepository(SellOrderEntity);
+    const buyOrderRepository = manager.getRepository(BuyOrderEntity);
+    const tradeRequestRepository = manager.getRepository(TradeRequestEntity);
+    const sellOrderRepository = manager.getRepository(SellOrderEntity);
 
-      const buyOrder = await buyOrderRepository.findOne({
-        where: { id: buyOrderId, buyerUserId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!buyOrder) {
-        throw MatchingDomainException.buyOrderNotFound();
-      }
+    const buyOrder = await buyOrderRepository.findOne({
+      where: { id: buyOrderId, buyerUserId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!buyOrder) {
+      throw MatchingDomainException.buyOrderNotFound();
+    }
 
-      const existingByKey = await tradeRequestRepository.findOne({
-        where: { buyerUserId, idempotencyKey: key },
-      });
-      if (existingByKey) {
-        return ApplyBuyOrderResponseDto.from(existingByKey);
-      }
+    const existingByKey = await tradeRequestRepository.findOne({
+      where: { buyerUserId, idempotencyKey: key },
+    });
+    if (existingByKey) {
+      return ApplyBuyOrderResponseDto.from(existingByKey);
+    }
 
-      if (buyOrder.status === BuyOrderStatus.MATCHED) {
-        throw MatchingDomainException.alreadyMatched();
-      }
-      if (buyOrder.status === BuyOrderStatus.REQUEST_PENDING) {
-        throw MatchingDomainException.buyOrderPendingRequest();
-      }
-      if (buyOrder.status !== BuyOrderStatus.MATCHING) {
-        throw MatchingDomainException.buyOrderNotMatchable();
-      }
-      if (this.isBuyOrderTimedOut(buyOrder, new Date())) {
-        buyOrder.status = BuyOrderStatus.EXPIRED;
-        buyOrder.nextMatchableAt = null;
-        await buyOrderRepository.save(buyOrder);
-        throw MatchingDomainException.buyOrderNotMatchable();
-      }
-
-      const pendingOnBuy = await tradeRequestRepository.findOne({
-        where: {
-          buyOrderId: buyOrder.id,
-          status: TradeRequestStatus.PENDING_SELLER,
-        },
-      });
-      if (pendingOnBuy) {
-        throw MatchingDomainException.buyOrderPendingRequest();
-      }
-
-      const sellOrder = await sellOrderRepository.findOne({
-        where: { id: dto.sellOrderId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!sellOrder) {
-        throw MatchingDomainException.sellOrderUnavailable();
-      }
-
-      const pendingOnSell = await tradeRequestRepository.findOne({
-        where: {
-          sellOrderId: sellOrder.id,
-          status: TradeRequestStatus.PENDING_SELLER,
-        },
-      });
-      if (pendingOnSell) {
-        throw MatchingDomainException.sellOrderPendingRequest();
-      }
-
-      if (!this.isSellOrderSelectable(sellOrder, buyOrder.buyerUserId)) {
-        throw MatchingDomainException.sellOrderUnavailable();
-      }
-
-      const policy = await this.findActiveMatchingPolicy(manager);
-      const computed = this.computeMatch(
-        buyOrder.coinAmount,
-        sellOrder.remainingCoinAmount,
-        policy.nearMatchMaxRatioBps,
-      );
-      if (!computed) {
-        throw MatchingDomainException.sellOrderUnavailable();
-      }
-      if (
-        computed.matchType !== dto.expectedMatchType ||
-        computed.coinAmount !== dto.expectedCoinAmount
-      ) {
-        throw MatchingDomainException.candidateChanged();
-      }
-
-      const matchAmount = BigInt(computed.coinAmount);
-      const remaining = BigInt(sellOrder.remainingCoinAmount);
-      const reserved = BigInt(sellOrder.reservedCoinAmount);
-      if (remaining < matchAmount) {
-        throw MatchingDomainException.sellOrderUnavailable();
-      }
-
-      const now = new Date();
-      const expiresAt = new Date(
-        now.getTime() + policy.tradeRequestTimeoutSeconds * 1000,
-      );
-
-      let tradeRequest: TradeRequestEntity;
-      try {
-        tradeRequest = await tradeRequestRepository.save(
-          tradeRequestRepository.create({
-            buyOrderId: buyOrder.id,
-            sellOrderId: sellOrder.id,
-            buyerUserId: buyOrder.buyerUserId,
-            sellerUserId: sellOrder.sellerUserId,
-            requestedCoinAmount: computed.coinAmount,
-            matchType: computed.matchType,
-            status: TradeRequestStatus.PENDING_SELLER,
-            expiresAt,
-            rejectionReasonCode: null,
-            acceptedAt: null,
-            rejectedAt: null,
-            cancelledAt: null,
-            expiredAt: null,
-            idempotencyKey: key,
-          }),
-        );
-      } catch (error) {
-        if (!this.isUniqueViolation(error)) {
-          throw error;
-        }
-        const racedByKey = await tradeRequestRepository.findOne({
-          where: { buyerUserId, idempotencyKey: key },
-        });
-        if (racedByKey) {
-          return ApplyBuyOrderResponseDto.from(racedByKey);
-        }
-        throw MatchingDomainException.sellOrderPendingRequest();
-      }
-
-      const nextRemaining = remaining - matchAmount;
-      const nextReserved = reserved + matchAmount;
-      sellOrder.remainingCoinAmount = nextRemaining.toString();
-      sellOrder.reservedCoinAmount = nextReserved.toString();
-      sellOrder.status = deriveSellOrderStatus(nextRemaining, nextReserved);
-      await sellOrderRepository.save(sellOrder);
-
-      buyOrder.status = BuyOrderStatus.REQUEST_PENDING;
+    if (buyOrder.status === BuyOrderStatus.MATCHED) {
+      throw MatchingDomainException.alreadyMatched();
+    }
+    if (buyOrder.status === BuyOrderStatus.REQUEST_PENDING) {
+      throw MatchingDomainException.buyOrderPendingRequest();
+    }
+    if (buyOrder.status !== BuyOrderStatus.MATCHING) {
+      throw MatchingDomainException.buyOrderNotMatchable();
+    }
+    if (this.isBuyOrderTimedOut(buyOrder, new Date())) {
+      buyOrder.status = BuyOrderStatus.EXPIRED;
       buyOrder.nextMatchableAt = null;
       await buyOrderRepository.save(buyOrder);
+      throw MatchingDomainException.buyOrderNotMatchable();
+    }
 
-      await this.notificationService.enqueueTradePushInTransaction(manager, {
-        eventType: NotificationEventType.TRADE_REQUEST_CREATED,
-        actorUserId: buyOrder.buyerUserId,
-        referenceType: NotificationReferenceType.TRADE_REQUEST,
-        referenceId: tradeRequest.id,
-        deepLink: `/trade/sell/${sellOrder.id}`,
-        recipientUserId: sellOrder.sellerUserId,
-        recipientRole: 'SELLER',
-        sellOrderId: sellOrder.id,
-      });
-
-      return ApplyBuyOrderResponseDto.from(tradeRequest);
+    const pendingOnBuy = await tradeRequestRepository.findOne({
+      where: {
+        buyOrderId: buyOrder.id,
+        status: TradeRequestStatus.PENDING_SELLER,
+      },
     });
-    this.orderRealtime.publishTradeRequest(applied.tradeRequestId);
-    this.orderRealtime.publishMatchingChanged();
-    return applied;
+    if (pendingOnBuy) {
+      throw MatchingDomainException.buyOrderPendingRequest();
+    }
+
+    const sellOrder = await sellOrderRepository.findOne({
+      where: { id: dto.sellOrderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!sellOrder) {
+      throw MatchingDomainException.sellOrderUnavailable();
+    }
+
+    const pendingOnSell = await tradeRequestRepository.findOne({
+      where: {
+        sellOrderId: sellOrder.id,
+        status: TradeRequestStatus.PENDING_SELLER,
+      },
+    });
+    if (pendingOnSell) {
+      throw MatchingDomainException.sellOrderPendingRequest();
+    }
+
+    if (!this.isSellOrderSelectable(sellOrder, buyOrder.buyerUserId)) {
+      throw MatchingDomainException.sellOrderUnavailable();
+    }
+
+    const policy = await this.findActiveMatchingPolicy(manager);
+    const computed = this.computeMatch(
+      buyOrder.coinAmount,
+      sellOrder.remainingCoinAmount,
+      policy.nearMatchMaxRatioBps,
+    );
+    if (!computed) {
+      throw MatchingDomainException.sellOrderUnavailable();
+    }
+    if (
+      computed.matchType !== dto.expectedMatchType ||
+      computed.coinAmount !== dto.expectedCoinAmount
+    ) {
+      throw MatchingDomainException.candidateChanged();
+    }
+
+    const matchAmount = BigInt(computed.coinAmount);
+    const remaining = BigInt(sellOrder.remainingCoinAmount);
+    const reserved = BigInt(sellOrder.reservedCoinAmount);
+    if (remaining < matchAmount) {
+      throw MatchingDomainException.sellOrderUnavailable();
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(
+      now.getTime() + policy.tradeRequestTimeoutSeconds * 1000,
+    );
+
+    let tradeRequest: TradeRequestEntity;
+    try {
+      tradeRequest = await tradeRequestRepository.save(
+        tradeRequestRepository.create({
+          buyOrderId: buyOrder.id,
+          sellOrderId: sellOrder.id,
+          buyerUserId: buyOrder.buyerUserId,
+          sellerUserId: sellOrder.sellerUserId,
+          requestedCoinAmount: computed.coinAmount,
+          matchType: computed.matchType,
+          status: TradeRequestStatus.PENDING_SELLER,
+          origin: dto.origin ?? TradeRequestOrigin.MATCHING,
+          expiresAt,
+          rejectionReasonCode: null,
+          acceptedAt: null,
+          rejectedAt: null,
+          cancelledAt: null,
+          expiredAt: null,
+          idempotencyKey: key,
+        }),
+      );
+    } catch (error) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+      const racedByKey = await tradeRequestRepository.findOne({
+        where: { buyerUserId, idempotencyKey: key },
+      });
+      if (racedByKey) {
+        return ApplyBuyOrderResponseDto.from(racedByKey);
+      }
+      throw MatchingDomainException.sellOrderPendingRequest();
+    }
+
+    const nextRemaining = remaining - matchAmount;
+    const nextReserved = reserved + matchAmount;
+    sellOrder.remainingCoinAmount = nextRemaining.toString();
+    sellOrder.reservedCoinAmount = nextReserved.toString();
+    sellOrder.status = deriveSellOrderStatus(nextRemaining, nextReserved);
+    await sellOrderRepository.save(sellOrder);
+
+    buyOrder.status = BuyOrderStatus.REQUEST_PENDING;
+    buyOrder.nextMatchableAt = null;
+    await buyOrderRepository.save(buyOrder);
+
+    await this.notificationService.enqueueTradePushInTransaction(manager, {
+      eventType: NotificationEventType.TRADE_REQUEST_CREATED,
+      actorUserId: buyOrder.buyerUserId,
+      referenceType: NotificationReferenceType.TRADE_REQUEST,
+      referenceId: tradeRequest.id,
+      deepLink: `/trade/sell/${sellOrder.id}`,
+      recipientUserId: sellOrder.sellerUserId,
+      recipientRole: 'SELLER',
+      sellOrderId: sellOrder.id,
+    });
+
+    return ApplyBuyOrderResponseDto.from(tradeRequest);
   }
 
   async getTradeRequest(
@@ -637,7 +675,10 @@ export class MatchingService {
         actorUserId: sellerUserId,
         referenceType: NotificationReferenceType.TRADE_REQUEST,
         referenceId: request.id,
-        deepLink: `/trade/matching/${request.buyOrderId}`,
+        deepLink:
+          request.origin === TradeRequestOrigin.MARKET
+            ? '/market'
+            : `/trade/matching/${request.buyOrderId}`,
         recipientUserId: request.buyerUserId,
         recipientRole: 'BUYER',
         buyOrderId: request.buyOrderId,
@@ -647,7 +688,8 @@ export class MatchingService {
       return TradeRequestResponseDto.from(request, null, buyer);
     });
     this.orderRealtime.publishTradeRequest(tradeRequestId);
-    this.orderRealtime.publishMatchingChanged();
+    this.orderRealtime.publishBuyOrder(rejected.buyOrderId);
+    this.orderRealtime.publishMatchingChangedForRequest(tradeRequestId);
     return rejected;
   }
 
@@ -685,7 +727,8 @@ export class MatchingService {
       return TradeRequestResponseDto.from(request, null, buyer);
     });
     this.orderRealtime.publishTradeRequest(tradeRequestId);
-    this.orderRealtime.publishMatchingChanged();
+    this.orderRealtime.publishBuyOrder(cancelled.buyOrderId);
+    this.orderRealtime.publishMatchingChangedForRequest(tradeRequestId);
     return cancelled;
   }
 
@@ -900,10 +943,10 @@ export class MatchingService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!request || request.status !== TradeRequestStatus.PENDING_SELLER) {
-        return false;
+        return null;
       }
       if (request.expiresAt.getTime() > Date.now()) {
-        return false;
+        return null;
       }
 
       const now = new Date();
@@ -912,11 +955,12 @@ export class MatchingService {
       await tradeRequestRepository.save(request);
 
       await this.tradeRequestReservationService.release(manager, request);
-      return true;
+      return request.buyOrderId;
     });
     if (!expired) return;
     this.orderRealtime.publishTradeRequest(tradeRequestId);
-    this.orderRealtime.publishMatchingChanged();
+    this.orderRealtime.publishBuyOrder(expired);
+    this.orderRealtime.publishMatchingChangedForRequest(tradeRequestId);
   }
 
   async listAdminAttempts(
@@ -1035,6 +1079,7 @@ export class MatchingService {
     buyOrder: BuyOrderEntity,
     nearMaxRatioBps: number,
   ): Promise<{ exactCount: number; nearCount: number }> {
+    const range = sellRangeForBuy(buyOrder.coinAmount, nearMaxRatioBps);
     const rows = await this.dataSource.query(
       `
       SELECT
@@ -1054,6 +1099,7 @@ export class MatchingService {
       WHERE so.status IN ('OPEN', 'PARTIALLY_MATCHED')
         AND so.remaining_coin_amount > 0
         AND so.cancelled_at IS NULL
+        AND so.remaining_coin_amount BETWEEN $6::bigint AND $7::bigint
         AND so.seller_user_id <> $1
         AND u.status = $5
       `,
@@ -1063,6 +1109,8 @@ export class MatchingService {
         nearMaxRatioBps,
         UserBankAccountStatus.ACTIVE,
         UserStatus.ACTIVE,
+        range.min.toString(),
+        range.max.toString(),
       ],
     );
     const row = rows[0] as { exact_count: number; near_count: number };
@@ -1092,9 +1140,14 @@ export class MatchingService {
     if (type === BuyMatchType.EXACT) {
       amountFilter = `AND so.remaining_coin_amount = $2::bigint`;
     } else {
+      const range = sellRangeForBuy(buyOrder.coinAmount, nearMaxRatioBps);
+      params.push(range.min.toString(), range.max.toString());
+      const minIdx = params.length - 1;
+      const maxIdx = params.length;
       params.push(nearMaxRatioBps);
       const nearIdx = params.length;
       amountFilter = `
+        AND so.remaining_coin_amount BETWEEN $${minIdx}::bigint AND $${maxIdx}::bigint
         AND so.remaining_coin_amount <> $2::bigint
         AND ABS(so.remaining_coin_amount - $2::bigint) * 10000
           <= $2::bigint * $${nearIdx}::bigint
@@ -1250,7 +1303,9 @@ export class MatchingService {
 
   /**
    * 판매자 수락 UI용 구매자 요약.
-   * completionRate = settled(COMPLETED+CANCELLED)=0 → 100, else floor(completed/settled*100)
+   * completionRate = completed / (completed + 구매자 귀책 취소).
+   * 구매자 귀책 취소: 입금 전 구매자 취소, 입금 시한 초과 후 미입금 확정.
+   * 분모 0 → null.
    */
   private async loadBuyerSummary(
     buyerUserId: string,
@@ -1262,31 +1317,32 @@ export class MatchingService {
       SELECT
         p.nickname,
         COALESCE(stats.completed_count, 0)::int AS completed_count,
-        COALESCE(stats.settled_count, 0)::int AS settled_count
+        COALESCE(stats.buyer_cancel_count, 0)::int AS buyer_cancel_count
       FROM (SELECT $1::uuid AS user_id) u
       LEFT JOIN user_profiles p ON p.user_id = u.user_id
       LEFT JOIN LATERAL (
         SELECT
           COUNT(*) FILTER (WHERE t.status = $2)::int AS completed_count,
-          COUNT(*) FILTER (WHERE t.status IN ($2, $3))::int AS settled_count
+          COUNT(*) FILTER (
+            WHERE ${faultCancelledTradeSql('t', 'BUYER')}
+          )::int AS buyer_cancel_count
         FROM trades t
         WHERE t.buyer_user_id = u.user_id
       ) stats ON true
       `,
-      [buyerUserId, TradeStatus.COMPLETED, TradeStatus.CANCELLED],
+      [buyerUserId, TradeStatus.COMPLETED],
     )) as Array<{
       nickname: string | null;
       completed_count: number;
-      settled_count: number;
+      buyer_cancel_count: number;
     }>;
 
     const row = rows[0];
     const completedTradeCount = Number(row?.completed_count ?? 0);
-    const settledCount = Number(row?.settled_count ?? 0);
-    const completionRate =
-      settledCount === 0
-        ? 100
-        : Math.floor((completedTradeCount / settledCount) * 100);
+    const completionRate = computeCompletionRatePct(
+      completedTradeCount,
+      Number(row?.buyer_cancel_count ?? 0),
+    );
 
     return {
       nicknameMasked: maskNickname(row?.nickname ?? null),

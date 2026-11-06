@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { AuthGuardsModule } from '../auth/auth-guards.module';
 import { SellOrderEntity } from '../orders/infrastructure/entities/sell-order.entity';
 import { UserProfileEntity } from '../users/infrastructure/entities/user-profile.entity';
 import { MarketController } from './market.controller';
@@ -13,6 +14,7 @@ import { MarketService } from './market.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([SellOrderEntity, UserProfileEntity]),
+    AuthGuardsModule,
   ],
   controllers: [MarketController],
   providers: [MarketService],

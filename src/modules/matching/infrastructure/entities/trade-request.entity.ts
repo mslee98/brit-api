@@ -14,6 +14,7 @@ import { BuyMatchType } from '../../../orders/domain/enums/buy-match-type.enum';
 import { BuyOrderEntity } from '../../../orders/infrastructure/entities/buy-order.entity';
 import { SellOrderEntity } from '../../../orders/infrastructure/entities/sell-order.entity';
 import { UserEntity } from '../../../users/infrastructure/entities/user.entity';
+import { TradeRequestOrigin } from '../../domain/enums/trade-request-origin.enum';
 import { TradeRequestRejectionReason } from '../../domain/enums/trade-request-rejection-reason.enum';
 import { TradeRequestStatus } from '../../domain/enums/trade-request-status.enum';
 
@@ -89,6 +90,15 @@ export class TradeRequestEntity {
     name: 'status',
   })
   status!: TradeRequestStatus;
+
+  @Column({
+    type: 'enum',
+    enum: TradeRequestOrigin,
+    enumName: 'trade_request_origin',
+    name: 'origin',
+    default: TradeRequestOrigin.MATCHING,
+  })
+  origin!: TradeRequestOrigin;
 
   @Column({ type: 'timestamptz', name: 'expires_at' })
   expiresAt!: Date;

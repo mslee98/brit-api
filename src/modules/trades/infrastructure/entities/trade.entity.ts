@@ -35,6 +35,9 @@ import { TradeEventEntity } from './trade-event.entity';
 @Index('ix_trades_sell_order_id', ['sellOrderId'])
 @Index('ix_trades_buyer_created', ['buyerUserId', 'createdAt'])
 @Index('ix_trades_seller_created', ['sellerUserId', 'createdAt'])
+@Index('ix_trades_seller_completed', ['sellerUserId'], {
+  where: `"status" = 'COMPLETED'`,
+})
 @Index('ix_trades_status_due', ['status', 'buyerPaymentDueAt'])
 @Index('ix_trades_status_seller_due', ['status', 'sellerConfirmationDueAt'])
 @Check('ck_trades_coin_amount', '"coin_amount" > 0')

@@ -1,13 +1,16 @@
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import {
   buildPaginationMeta,
   PaginationMeta,
 } from '../../common/dto/pagination-query.dto';
+import { TradeRequestOrigin } from '../matching/domain/enums/trade-request-origin.enum';
 import { MatchingService } from '../matching/matching.service';
 import {
+  ApplyBuyOrderDto,
+  CreateMarketTradeRequestDto,
   MatchBuyOrderDto,
   MatchBuyOrderResponseDto,
   ApplyBuyOrderResponseDto,
@@ -18,6 +21,7 @@ import {
 import { UserProfileEntity } from '../users/infrastructure/entities/user-profile.entity';
 import { UserEntity } from '../users/infrastructure/entities/user.entity';
 import { UserService } from '../users/user.service';
+import { BuyMatchType } from './domain/enums/buy-match-type.enum';
 import { BuyOrderStatus } from './domain/enums/buy-order-status.enum';
 import {
   AdminBuyOrderDetailDto,
@@ -67,46 +71,97 @@ export class BuyOrderService {
       throw OrderDomainException.invalidOrderAmount();
     }
 
-    const saved = await this.dataSource.transaction(async (manager) => {
-      const orderRepository = manager.getRepository(BuyOrderEntity);
-      const existing = await orderRepository.findOne({
-        where: {
-          buyerUserId,
-          idempotencyKey: idempotencyKey.trim(),
-        },
-      });
-      if (existing) {
-        if (existing.coinAmount !== dto.coinAmount) {
-          throw OrderDomainException.duplicateOrderRequest();
-        }
-        return existing;
-      }
-
-      await this.userService.assertP2pEligibleInTransaction(
+    const saved = await this.dataSource.transaction((manager) =>
+      this.createBuyOrderInTransaction(
         manager,
         buyerUserId,
-      );
-
-      const orderNumber = await nextOrderNumber(manager, 'BO');
-      const order = orderRepository.create({
-        orderNumber,
-        buyerUserId,
-        coinAmount: dto.coinAmount,
-        matchedCoinAmount: null,
-        matchType: null,
-        status: BuyOrderStatus.MATCHING,
-        rematchCount: 0,
-        nextMatchableAt: null,
-        idempotencyKey: idempotencyKey.trim(),
-        matchedAt: null,
-        completedAt: null,
-        cancelledAt: null,
-      });
-      return orderRepository.save(order);
-    });
+        dto.coinAmount,
+        idempotencyKey,
+      ),
+    );
 
     this.orderRealtime.publishBuyOrder(saved.id);
     return BuyOrderResponseDto.from(saved);
+  }
+
+  /**
+   * 거래소 판매글 요청 — BuyOrder 생성과 Apply(origin MARKET)를 한 트랜잭션으로.
+   * Apply가 실패하면 BuyOrder도 남지 않는다. 같은 Idempotency-Key 재시도는 기존 요청을 돌려준다.
+   */
+  async requestFromMarket(
+    buyerUserId: string,
+    dto: CreateMarketTradeRequestDto,
+    idempotencyKey: string,
+  ): Promise<ApplyBuyOrderResponseDto> {
+    if (!idempotencyKey?.trim()) {
+      throw OrderDomainException.idempotencyKeyRequired();
+    }
+    if (!isPositiveAmountString(dto.expectedCoinAmount)) {
+      throw OrderDomainException.invalidOrderAmount();
+    }
+
+    const applied = await this.dataSource.transaction(async (manager) => {
+      const buyOrder = await this.createBuyOrderInTransaction(
+        manager,
+        buyerUserId,
+        dto.expectedCoinAmount,
+        idempotencyKey,
+      );
+      return this.matchingService.applyToSellOrderInTransaction(
+        manager,
+        buyerUserId,
+        buyOrder.id,
+        {
+          sellOrderId: dto.sellOrderId,
+          expectedMatchType: BuyMatchType.EXACT,
+          expectedCoinAmount: dto.expectedCoinAmount,
+          origin: TradeRequestOrigin.MARKET,
+        },
+        idempotencyKey,
+      );
+    });
+
+    this.orderRealtime.publishBuyOrder(applied.buyOrderId);
+    this.matchingService.publishTradeRequestApplied(applied.tradeRequestId);
+    return applied;
+  }
+
+  private async createBuyOrderInTransaction(
+    manager: EntityManager,
+    buyerUserId: string,
+    coinAmount: string,
+    idempotencyKey: string,
+  ): Promise<BuyOrderEntity> {
+    const key = idempotencyKey.trim();
+    const orderRepository = manager.getRepository(BuyOrderEntity);
+    const existing = await orderRepository.findOne({
+      where: { buyerUserId, idempotencyKey: key },
+    });
+    if (existing) {
+      if (existing.coinAmount !== coinAmount) {
+        throw OrderDomainException.duplicateOrderRequest();
+      }
+      return existing;
+    }
+
+    await this.userService.assertP2pEligibleInTransaction(manager, buyerUserId);
+
+    const orderNumber = await nextOrderNumber(manager, 'BO');
+    const order = orderRepository.create({
+      orderNumber,
+      buyerUserId,
+      coinAmount,
+      matchedCoinAmount: null,
+      matchType: null,
+      status: BuyOrderStatus.MATCHING,
+      rematchCount: 0,
+      nextMatchableAt: null,
+      idempotencyKey: key,
+      matchedAt: null,
+      completedAt: null,
+      cancelledAt: null,
+    });
+    return orderRepository.save(order);
   }
 
   async getMatchingStatus(
@@ -135,7 +190,7 @@ export class BuyOrderService {
   async applyToSellOrder(
     buyerUserId: string,
     orderId: string,
-    dto: MatchBuyOrderDto,
+    dto: ApplyBuyOrderDto,
     idempotencyKey: string,
   ): Promise<ApplyBuyOrderResponseDto> {
     return this.matchingService.applyToSellOrder(

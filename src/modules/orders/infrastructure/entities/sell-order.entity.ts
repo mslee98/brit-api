@@ -26,6 +26,9 @@ import { SellOrderCoinLotEntity } from './sell-order-coin-lot.entity';
   unique: true,
   where: '"idempotency_key" IS NOT NULL',
 })
+@Index('ix_sell_orders_matchable_remaining', ['remainingCoinAmount'], {
+  where: `"status" IN ('OPEN', 'PARTIALLY_MATCHED') AND "cancelled_at" IS NULL AND "remaining_coin_amount" > 0`,
+})
 @Check('ck_sell_orders_original', '"original_coin_amount" > 0')
 @Check('ck_sell_orders_amounts_non_negative', `
   "remaining_coin_amount" >= 0

@@ -8,6 +8,7 @@ import {
   PaginationMeta,
 } from '../../common/dto/pagination-query.dto';
 import { CoinService } from '../coins/coin.service';
+import { TradeRequestStatus } from '../matching/domain/enums/trade-request-status.enum';
 import { TradeRequestResponseDto } from '../matching/dto/matching-response.dto';
 import { MatchingService } from '../matching/matching.service';
 import { UserProfileEntity } from '../users/infrastructure/entities/user-profile.entity';
@@ -130,6 +131,11 @@ export class SellOrderService implements OnModuleInit {
         },
       );
 
+      // 지갑 행 잠금 뒤에 검사해야 동시 등록 두 건이 함께 통과하지 않는다.
+      if (await this.hasActiveSellOrder(manager, sellerUserId)) {
+        throw OrderDomainException.activeSellOrderExists();
+      }
+
       const orderRepository = manager.getRepository(SellOrderEntity);
       const orderNumber = await nextOrderNumber(manager, 'SO');
       const order = orderRepository.create({
@@ -167,7 +173,7 @@ export class SellOrderService implements OnModuleInit {
       return SellOrderResponseDto.from(saved);
     });
     this.orderRealtime.publishSellOrder(created.id);
-    this.orderRealtime.publishMatchingChanged();
+    this.orderRealtime.publishMatchingChanged(created.id, []);
     return created;
   }
 
@@ -175,6 +181,7 @@ export class SellOrderService implements OnModuleInit {
     sellerUserId: string,
     orderId: string,
   ): Promise<SellOrderResponseDto> {
+    let unlockedAmount = '0';
     const cancelled = await this.dataSource.transaction(async (manager) => {
       const orderRepository = manager.getRepository(SellOrderEntity);
       const order = await orderRepository.findOne({
@@ -254,10 +261,11 @@ export class SellOrderService implements OnModuleInit {
       order.cancelledAt = new Date();
       order.status = SellOrderStatus.CANCELLED;
       const saved = await orderRepository.save(order);
+      unlockedAmount = unlockAmount;
       return SellOrderResponseDto.from(saved);
     });
     this.orderRealtime.publishSellOrder(orderId);
-    this.orderRealtime.publishMatchingChanged();
+    this.orderRealtime.publishMatchingChanged(orderId, [unlockedAmount]);
     return cancelled;
   }
 
@@ -465,6 +473,35 @@ export class SellOrderService implements OnModuleInit {
       status: row.status,
       createdAt: row.createdAt,
     }));
+  }
+
+  /**
+   * 1인 1활성 판매 — 잔량이 남았거나 판매자 응답 대기 요청이 있는 판매글.
+   * 잔량 전부가 거래 중(FULLY_RESERVED, 대기 요청 없음)이면 활성으로 보지 않는다 (FE useCurrentSellFlow와 동일).
+   */
+  private async hasActiveSellOrder(
+    manager: EntityManager,
+    sellerUserId: string,
+  ): Promise<boolean> {
+    return manager
+      .getRepository(SellOrderEntity)
+      .createQueryBuilder('so')
+      .where('so.seller_user_id = :sellerUserId', { sellerUserId })
+      .andWhere('so.status IN (:...statuses)', {
+        statuses: [
+          SellOrderStatus.OPEN,
+          SellOrderStatus.PARTIALLY_MATCHED,
+          SellOrderStatus.FULLY_RESERVED,
+        ],
+      })
+      .andWhere(
+        `(so.remaining_coin_amount > 0 OR EXISTS (
+          SELECT 1 FROM trade_requests tr
+          WHERE tr.sell_order_id = so.id AND tr.status = :pendingStatus
+        ))`,
+        { pendingStatus: TradeRequestStatus.PENDING_SELLER },
+      )
+      .getExists();
   }
 
   private async findActivePolicy(

@@ -5,11 +5,13 @@ import { BuyOrderStatus } from '../orders/domain/enums/buy-order-status.enum';
 import { deriveSellOrderStatus } from '../orders/utils/sell-order-status.util';
 import { BuyOrderEntity } from '../orders/infrastructure/entities/buy-order.entity';
 import { SellOrderEntity } from '../orders/infrastructure/entities/sell-order.entity';
+import { TradeRequestOrigin } from './domain/enums/trade-request-origin.enum';
 import { TradeRequestEntity } from './infrastructure/entities/trade-request.entity';
 
 /**
  * TradeRequest Soft-lock 해제.
  * Reject / Cancel / Expire가 동일하게 호출. Idempotent.
+ * BuyOrder: MATCHING 출처는 MATCHING 복귀, MARKET 출처는 CANCELLED.
  * 전제: Request는 이미 종료 상태(REJECTED|CANCELLED_BY_BUYER|EXPIRED)로 저장된 뒤.
  */
 @Injectable()
@@ -43,7 +45,12 @@ export class TradeRequestReservationService {
       lock: { mode: 'pessimistic_write' },
     });
     if (buyOrder && buyOrder.status === BuyOrderStatus.REQUEST_PENDING) {
-      buyOrder.status = BuyOrderStatus.MATCHING;
+      if (request.origin === TradeRequestOrigin.MARKET) {
+        buyOrder.status = BuyOrderStatus.CANCELLED;
+        buyOrder.cancelledAt = new Date();
+      } else {
+        buyOrder.status = BuyOrderStatus.MATCHING;
+      }
       await manager.getRepository(BuyOrderEntity).save(buyOrder);
     }
   }

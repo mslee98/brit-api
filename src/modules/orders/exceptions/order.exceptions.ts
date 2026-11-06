@@ -68,6 +68,13 @@ export class OrderDomainException {
     });
   }
 
+  static activeSellOrderExists(): ConflictException {
+    return new ConflictException({
+      code: 'ACTIVE_SELL_ORDER_EXISTS',
+      message: '진행 중인 판매가 있어요. 내 판매에서 확인해 주세요.',
+    });
+  }
+
   static idempotencyKeyRequired(): BadRequestException {
     return new BadRequestException({
       code: 'IDEMPOTENCY_KEY_REQUIRED',
