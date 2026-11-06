@@ -11,9 +11,17 @@ import {
   WebSocketServer,
   WsException,
 } from '@nestjs/websockets';
+import { InjectRepository } from '@nestjs/typeorm';
 import type { Server, Socket } from 'socket.io';
+import { Repository } from 'typeorm';
 
+import { RealtimeSessionRegistry } from '../../../common/realtime/realtime-session.registry';
+import {
+  applySocketAuth,
+  getSocketUser,
+} from '../../../common/realtime/socket-auth';
 import { AccessTokenVerifier } from '../../auth/access-token.verifier';
+import { BuyOrderEntity } from '../infrastructure/entities/buy-order.entity';
 import {
   buyOrderRoom,
   ORDER_WS_EVENTS,
@@ -24,8 +32,7 @@ import { OrderRealtimePublisher } from './order-realtime.publisher';
 
 function parseCorsOrigins(raw: string | undefined): string[] | boolean {
   const value =
-    raw ||
-    'http://localhost:5173,http://localhost:5174,http://localhost:5175';
+    raw || 'http://localhost:5173,http://localhost:5174,http://localhost:5175';
   const origins = value
     .split(',')
     .map((origin) => origin.trim())
@@ -34,6 +41,9 @@ function parseCorsOrigins(raw: string | undefined): string[] | boolean {
 }
 
 type BuyOrderRoomBody = { buyOrderId?: string };
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @WebSocketGateway({
   namespace: ORDER_WS_NAMESPACE,
@@ -51,12 +61,16 @@ export class OrderGateway
   server!: Server;
 
   constructor(
+    @InjectRepository(BuyOrderEntity)
+    private readonly buyOrderRepository: Repository<BuyOrderEntity>,
     private readonly accessTokenVerifier: AccessTokenVerifier,
     private readonly publisher: OrderRealtimePublisher,
     private readonly configService: ConfigService,
+    private readonly sessions: RealtimeSessionRegistry,
   ) {}
 
   afterInit(server: Server): void {
+    applySocketAuth(server, this.accessTokenVerifier, this.logger);
     this.publisher.attach(server);
     this.logger.log(
       `Order WS ready ns=${ORDER_WS_NAMESPACE} cors=${this.configService.get<string>('CORS_ORIGINS') ?? 'default'}`,
@@ -64,25 +78,20 @@ export class OrderGateway
   }
 
   async handleConnection(client: Socket): Promise<void> {
-    try {
-      const token = this.extractToken(client);
-      if (!token) {
-        throw new WsException('UNAUTHORIZED');
-      }
-      const user = await this.accessTokenVerifier.verify(token);
-      client.data.user = user;
-      await client.join(orderUserRoom(user.userId));
-    } catch (error) {
-      this.logger.warn(
-        `Order WS connect rejected: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    const user = getSocketUser(client);
+    if (!user) {
       client.disconnect(true);
+      return;
+    }
+    this.sessions.track(client);
+    // 상태 복구로 붙은 연결은 room이 이미 복원돼 있다.
+    if (!client.recovered) {
+      await client.join(orderUserRoom(user.userId));
     }
   }
 
   handleDisconnect(client: Socket): void {
+    this.sessions.untrack(client);
     this.logger.debug(`Order WS disconnect id=${client.id}`);
   }
 
@@ -91,12 +100,19 @@ export class OrderGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: BuyOrderRoomBody,
   ): Promise<{ ok: true }> {
-    if (!client.data.user) {
+    const user = getSocketUser(client);
+    if (!user) {
       throw new WsException('UNAUTHORIZED');
     }
     const buyOrderId = body?.buyOrderId?.trim();
-    if (!buyOrderId) {
+    if (!buyOrderId || !UUID_PATTERN.test(buyOrderId)) {
       throw new WsException('BUY_ORDER_REQUIRED');
+    }
+    const owned = await this.buyOrderRepository.exists({
+      where: { id: buyOrderId, buyerUserId: user.userId },
+    });
+    if (!owned) {
+      throw new WsException('BUY_ORDER_NOT_FOUND');
     }
     await client.join(buyOrderRoom(buyOrderId));
     return { ok: true };
@@ -112,17 +128,5 @@ export class OrderGateway
       await client.leave(buyOrderRoom(buyOrderId));
     }
     return { ok: true };
-  }
-
-  private extractToken(client: Socket): string | null {
-    const auth = client.handshake.auth as { token?: unknown } | undefined;
-    if (typeof auth?.token === 'string' && auth.token.trim()) {
-      return auth.token.trim();
-    }
-    const header = client.handshake.headers.authorization;
-    if (typeof header === 'string' && header.startsWith('Bearer ')) {
-      return header.slice('Bearer '.length).trim();
-    }
-    return null;
   }
 }

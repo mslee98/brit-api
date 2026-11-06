@@ -122,6 +122,9 @@ export class TradeResponseDto {
   @ApiProperty()
   createdAt!: Date;
 
+  @ApiProperty({ description: '마지막 상태 변경 시각. 클라이언트가 늦게 도착한 응답을 버리는 기준' })
+  updatedAt!: Date;
+
   @ApiPropertyOptional({ nullable: true })
   cancelledAt!: Date | null;
 

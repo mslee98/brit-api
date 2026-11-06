@@ -2873,6 +2873,7 @@ export class TradeService {
       buyerPaymentDueAt: trade.buyerPaymentDueAt,
       sellerConfirmationDueAt: trade.sellerConfirmationDueAt,
       createdAt: trade.createdAt,
+      updatedAt: trade.updatedAt,
       cancelledAt: trade.cancelledAt,
       cancellationReason: trade.cancellationReason,
       ...flags,

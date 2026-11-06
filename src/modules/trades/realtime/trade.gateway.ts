@@ -6,10 +6,14 @@ import {
   OnGatewayInit,
   WebSocketGateway,
   WebSocketServer,
-  WsException,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 
+import { RealtimeSessionRegistry } from '../../../common/realtime/realtime-session.registry';
+import {
+  applySocketAuth,
+  getSocketUser,
+} from '../../../common/realtime/socket-auth';
 import { AccessTokenVerifier } from '../../auth/access-token.verifier';
 import { TradeRealtimePublisher } from './trade-realtime.publisher';
 import { TRADE_WS_NAMESPACE, tradeUserRoom } from './trade-realtime.constants';
@@ -44,9 +48,11 @@ export class TradeGateway
     private readonly accessTokenVerifier: AccessTokenVerifier,
     private readonly publisher: TradeRealtimePublisher,
     private readonly configService: ConfigService,
+    private readonly sessions: RealtimeSessionRegistry,
   ) {}
 
   afterInit(server: Server): void {
+    applySocketAuth(server, this.accessTokenVerifier, this.logger);
     this.publisher.attach(server);
     this.logger.log(
       `Trade WS ready ns=${TRADE_WS_NAMESPACE} cors=${this.configService.get<string>('CORS_ORIGINS') ?? 'default'}`,
@@ -54,37 +60,20 @@ export class TradeGateway
   }
 
   async handleConnection(client: Socket): Promise<void> {
-    try {
-      const token = this.extractToken(client);
-      if (!token) {
-        throw new WsException('UNAUTHORIZED');
-      }
-      const user = await this.accessTokenVerifier.verify(token);
-      client.data.user = user;
-      await client.join(tradeUserRoom(user.userId));
-    } catch (error) {
-      this.logger.warn(
-        `Trade WS connect rejected: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    const user = getSocketUser(client);
+    if (!user) {
       client.disconnect(true);
+      return;
+    }
+    this.sessions.track(client);
+    // 상태 복구로 붙은 연결은 room이 이미 복원돼 있다.
+    if (!client.recovered) {
+      await client.join(tradeUserRoom(user.userId));
     }
   }
 
   handleDisconnect(client: Socket): void {
+    this.sessions.untrack(client);
     this.logger.debug(`Trade WS disconnect id=${client.id}`);
-  }
-
-  private extractToken(client: Socket): string | null {
-    const auth = client.handshake.auth as { token?: unknown } | undefined;
-    if (typeof auth?.token === 'string' && auth.token.trim()) {
-      return auth.token.trim();
-    }
-    const header = client.handshake.headers.authorization;
-    if (typeof header === 'string' && header.startsWith('Bearer ')) {
-      return header.slice('Bearer '.length).trim();
-    }
-    return null;
   }
 }

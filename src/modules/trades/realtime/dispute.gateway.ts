@@ -15,6 +15,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import type { Server, Socket } from 'socket.io';
 import { In, Repository } from 'typeorm';
 
+import { RealtimeSessionRegistry } from '../../../common/realtime/realtime-session.registry';
+import {
+  applySocketAuth,
+  getSocketUser,
+} from '../../../common/realtime/socket-auth';
 import type { AuthenticatedUser } from '../../../common/types/authenticated-user';
 import { AccessTokenVerifier } from '../../auth/access-token.verifier';
 import { AuthClientType } from '../../auth/domain/enums/auth-client-type.enum';
@@ -69,9 +74,11 @@ export class DisputeGateway
     private readonly adminProfileRepository: Repository<AdminProfileEntity>,
     @InjectRepository(UserRoleEntity)
     private readonly roleRepository: Repository<UserRoleEntity>,
+    private readonly sessions: RealtimeSessionRegistry,
   ) {}
 
   afterInit(server: Server): void {
+    applySocketAuth(server, this.accessTokenVerifier, this.logger);
     this.publisher.attach(server);
     this.logger.log(
       `Dispute WS ready ns=${DISPUTE_WS_NAMESPACE} cors=${this.configService.get<string>('CORS_ORIGINS') ?? 'default'}`,
@@ -79,14 +86,16 @@ export class DisputeGateway
   }
 
   async handleConnection(client: Socket): Promise<void> {
+    const user = getSocketUser(client);
+    if (!user) {
+      client.disconnect(true);
+      return;
+    }
+    this.sessions.track(client);
+    // 상태 복구로 붙은 연결은 data(isAdmin)와 room이 이미 복원돼 있다.
+    if (client.recovered) return;
     try {
-      const token = this.extractToken(client);
-      if (!token) {
-        throw new WsException('UNAUTHORIZED');
-      }
-      const user = await this.accessTokenVerifier.verify(token);
       const isAdmin = await this.resolveIsAdmin(user);
-      client.data.user = user;
       client.data.isAdmin = isAdmin;
       if (isAdmin) {
         await client.join(ADMIN_DISPUTES_ROOM);
@@ -104,6 +113,7 @@ export class DisputeGateway
   }
 
   handleDisconnect(client: Socket): void {
+    this.sessions.untrack(client);
     this.logger.debug(`WS disconnect id=${client.id}`);
   }
 
@@ -141,18 +151,6 @@ export class DisputeGateway
       await client.leave(disputeRoom(disputeId));
     }
     return { ok: true };
-  }
-
-  private extractToken(client: Socket): string | null {
-    const authToken = client.handshake.auth?.token;
-    if (typeof authToken === 'string' && authToken.trim()) {
-      return authToken.trim();
-    }
-    const header = client.handshake.headers.authorization;
-    if (typeof header === 'string' && header.startsWith('Bearer ')) {
-      return header.slice('Bearer '.length).trim();
-    }
-    return null;
   }
 
   private async resolveIsAdmin(user: AuthenticatedUser): Promise<boolean> {

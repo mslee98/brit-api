@@ -5,6 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ServeStaticModule } from '@nestjs/serve-static';
 
+import { RealtimeModule } from './common/realtime/realtime.module';
 import { resolveAssetRootPath } from './common/utils/asset-root-path.util';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -43,6 +44,7 @@ import { UsersModule } from './modules/users/users.module';
       ],
     }),
     DatabaseModule,
+    RealtimeModule,
     HealthModule,
     UsersModule,
     AdminsModule,
