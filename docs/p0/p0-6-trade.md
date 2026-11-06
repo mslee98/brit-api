@@ -99,17 +99,24 @@ TX B 안에서 (한 트랜잭션, 중간 실패 시 전부 rollback):
 |---|---|
 | namespace | `/trades` |
 | 이벤트 | `trade.updated` `{ tradeId, status, buyerUserId, sellerUserId }` |
-| 방 | 연결 시 액세스 토큰 검증 후 `user:{userId}` 자동 join. 클라이언트 join 메시지 없음 |
+| 인증 | namespace 미들웨어(`common/realtime/socket-auth.ts`). `/trades` `/orders` `/disputes` 공통. 실패하면 `connect_error` message `UNAUTHORIZED` → 클라이언트가 토큰 갱신 후 재연결 |
+| 세션 폐기 | `RealtimeSessionRegistry`가 연결된 소켓을 세션(sid)별로 들고 15초마다 `user_sessions`가 아직 ACTIVE인지 확인한다. 로그아웃·전체 로그아웃·정지·refresh 재사용 감지 등으로 폐기된 세션의 소켓은 서버가 끊는다(상태 복구 대상 아님, 재연결 시 handshake 재인증) |
+| 방 | 인증 뒤 `user:{userId}` 자동 join. 클라이언트 join 메시지 없음. 상태 복구로 붙은 연결은 방이 복원돼 다시 join하지 않음 |
 | emit | TX 커밋 뒤 `publishTradeUpdated`. 트랜잭션 안에서는 보내지 않음 |
 | 수신 | 거래 상세가 열려 있을 때만. `tradeId`가 같으면 GET 한 번 |
 
 발행 지점: 사용자 write 성공 반환 직전, 관리자 분쟁 오픈·해결, Worker의 입금 타임아웃·판매자 확인 타임아웃·코인 이전 복구. 새 상태 전이는 커밋 뒤에 `publishTradeUpdated(tradeId)`를 호출한다. 빼먹으면 그 전이만 화면이 멈춘다.
 
-끊긴 동안의 변경은 다시 보내지 않는다. 따라잡기는 상세 재진입과 탭 visible 때의 GET이다. Gateway `attach` 전에 emit하면 버린다.
+끊김 복구는 두 겹이다.
+
+1. 서버 `connectionStateRecovery`(`BritIoAdapter`, 2분): 짧은 끊김 동안 놓친 이벤트를 재연결 시 다시 보낸다. 단일 서버 운영 전제(메모리 adapter). 서버가 죽으면 모든 소켓이 끊기고 재연결이 복구 실패로 처리돼 2번 resync가 돈다. 그래서 커밋 뒤·발행 전에 프로세스가 죽어 잃은 신호도 별도 outbox 없이 다시 맞춰진다. 인스턴스를 늘리면 Redis Streams adapter, 신호 합치기·세션 레지스트리 공유가 필요하다.
+2. 클라이언트 resync: 복구에 실패한 재연결·앱 복귀·온라인 복귀 때 화면이 GET을 한 번 친다. 끊긴 동안에만 3초→30초 백오프로 GET과 재연결을 시도한다.
+
+응답의 `updatedAt`은 마지막 상태 변경 시각이다. 클라이언트는 이보다 오래된 응답을 버린다. Gateway `attach` 전에 emit하면 버린다.
 
 ## 남은 HTTP 폴링
 
-거래 상세·홈 진행 중 거래의 interval은 제거됐다. 로그인 동안 `/trades`는 앱에서 한 번 연결하고, `trade.updated`가 오면 상세 또는 목록 GET을 한 번 친다. 첫 진입과 탭 visible GET은 유지한다.
+거래 상세·홈 진행 중 거래의 interval은 없다. 로그인 동안 `/trades`는 앱에서 한 번 연결하고, `trade.updated`가 오면 상세 또는 목록 GET을 한 번 친다. 그 밖의 GET은 첫 진입, resync, 서버 마감 시각(입금 기한·판매자 확인 기한) 직후 한 번뿐이다.
 
 주문·신청·후보는 `/orders`다. 이벤트는 `buy-order.updated`, `sell-order.updated`, `trade-request.updated`, `matching.changed`. 본문은 GET. 1초 카운트다운은 시계라 그대로다. 상세는 [p0-4-orders.md](./p0-4-orders.md), [p0-5-matching.md](./p0-5-matching.md).
 

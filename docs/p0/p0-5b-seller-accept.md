@@ -11,7 +11,10 @@
 Apply → remaining↓ reserved↑ → TradeRequest PENDING_SELLER → Buy REQUEST_PENDING
 Accept → (재차감 없음) Trade Binding → Buy MATCHED → 입금 TTL 시작
 Reject|Expire|Cancel → release() → reserved↓ remaining↑ → Buy MATCHING
+                                                        (origin=MARKET이면 Buy CANCELLED)
 ```
+
+`trade_requests.origin` (pg enum `trade_request_origin`, 기본 `MATCHING`). 거래소 요청은 `POST /v1/buy-orders/market-request` (body `sellOrderId`, `expectedCoinAmount`, `Idempotency-Key` 필수)로 BuyOrder 생성과 Apply(`MARKET`, 정확 매칭)를 한 트랜잭션에서 처리한다. Apply가 실패하면 BuyOrder도 롤백된다. `MARKET` 요청은 종료 시 MATCHING 탐색으로 돌아가지 않고 구매 주문을 닫으며, 거절 푸시 deepLink는 `/market`. apply body의 `origin`은 하위 호환용으로만 남아 있다.
 
 Push: 기존 `notification_events` / `notification_recipients` + 신규 `user_push_subscriptions` / `notification_outbox` — **M7 미구현 (TODO stub)**.  
 신규 `notifications` 테이블 없음.
@@ -36,7 +39,7 @@ Push: 기존 `notification_events` / `notification_recipients` + 신규 `user_pu
 |------|------|
 | `nicknameMasked` | `maskNickname(profile.nickname)` |
 | `completedTradeCount` | buyer의 `COMPLETED` trade 수 |
-| `completionRate` | `settled=COMPLETED+CANCELLED`; 0이면 100, else `floor(completed/settled*100)` |
+| `completionRate` | `floor(completed / (completed + 구매자 귀책 취소) * 100)`. 구매자 귀책 취소 = 입금 전 구매자 취소(`TRADE_CANCELLED`, actor BUYER, previous WAITING_BUYER_PAYMENT) + 미입금 확정(previous PAYMENT_TIMEOUT). 판매자 취소·합의·분쟁 강제 취소 제외. 분모 0이면 `null` |
 
 ## 스키마·런타임
 

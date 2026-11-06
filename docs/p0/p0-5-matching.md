@@ -33,6 +33,8 @@ BuyOrder MATCHING
 
 실시간 신호는 [p0-4-orders.md](./p0-4-orders.md) `/orders`. 후보 폴링은 없다. `matching.changed`는 판매 잔량이 실제로 바뀐 뒤에만 보낸다. Request TTL 만료는 `EXPIRED`로 저장됐을 때만 발행하고, 이미 수락됐거나 아직 기한 전인 no-op은 보내지 않는다. 매칭 대기는 `buy-order:{id}`에 join하고, 진입 시 candidates GET을 한 번 친 뒤 `matching.changed`가 오면 짧게 모아 다시 한 번 친다. 신청 상태는 `trade-request.updated` 뒤 request GET.
 
+규모 대비: NEAR 판정 `|sell - buy| * 10000 <= buy * ratioBps`를 `domain/near-match-range.ts`에서 닫힌 금액 범위로 바꿔 쓴다. 후보 쿼리는 `sellRangeForBuy` 범위를 `BETWEEN`으로 붙여 `ix_sell_orders_matchable_remaining`(매칭 가능 판매만의 부분 인덱스)를 타고, 신호 대상 구매는 `buyRangeForSell` 범위로 `ix_buy_orders_matching_amount`에서 찾는다. 판매자 완료 거래 수는 `ix_trades_seller_completed`로 센다. 마이그레이션 `1753440000000-AddMatchingScaleIndexes`.
+
 ## API
 
 | Method | Path | 설명 |
