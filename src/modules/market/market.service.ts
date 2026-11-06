@@ -12,7 +12,7 @@ import {
   computeCompletionRatePct,
   faultCancelledTradeSql,
 } from '../trades/domain/trade-completion-rate';
-import { maskNickname } from '../trades/utils/nickname-mask.util';
+import { maskNickname } from '../users/utils/nickname-mask.util';
 import { UserProfileEntity } from '../users/infrastructure/entities/user-profile.entity';
 import { MarketSellOrderQueryDto } from './dto/market-sell-order-query.dto';
 import {

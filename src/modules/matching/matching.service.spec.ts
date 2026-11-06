@@ -348,6 +348,7 @@ describe('MatchingService (Browse+Select)', () => {
         {
           provide: UserService,
           useValue: {
+            getMaskedNicknameByUserId: async () => '테**',
             getActiveBankAccountPlaintextInTransaction: async (
               _m: EntityManager,
               sellerUserId: string,

@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import type { NotificationCopyRole } from '../domain/constants/notification.constants';
+import { NotificationActionState } from '../domain/enums/notification-action-state.enum';
 import { NotificationEventType } from '../domain/enums/notification-event-type.enum';
 import { NotificationPriority } from '../domain/enums/notification-priority.enum';
 import { NotificationReferenceType } from '../domain/enums/notification-reference-type.enum';
@@ -45,8 +47,32 @@ export class NotificationInboxItemResponseDto {
   @ApiProperty()
   createdAt!: Date;
 
+  @ApiProperty({
+    enum: NotificationActionState,
+    description: '연결된 업무 기준 처리 필요 여부 (읽음과 별개)',
+  })
+  actionState!: NotificationActionState;
+
+  @ApiPropertyOptional({ nullable: true, enum: ['BUYER', 'SELLER'] })
+  recipientRole!: NotificationCopyRole | null;
+
+  @ApiPropertyOptional({ nullable: true, description: '거래 수량 (발송 시점)' })
+  coinAmount!: string | null;
+
+  @ApiPropertyOptional({ nullable: true, description: '상대방 마스킹 닉네임' })
+  counterpartyNicknameMasked!: string | null;
+
   static from(item: NotificationListItem): NotificationInboxItemResponseDto {
+    const payload = item.payload;
     return {
+      actionState: item.actionState,
+      recipientRole: item.recipientRole,
+      coinAmount:
+        typeof payload.coinAmount === 'string' ? payload.coinAmount : null,
+      counterpartyNicknameMasked:
+        typeof payload.counterpartyNicknameMasked === 'string'
+          ? payload.counterpartyNicknameMasked
+          : null,
       recipientNotificationId: item.recipientNotificationId,
       notificationId: item.event.id,
       type: item.event.eventType,

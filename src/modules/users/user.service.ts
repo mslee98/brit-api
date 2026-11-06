@@ -58,6 +58,7 @@ import {
   RejectUserRegistrationDto,
 } from './dto/approve-user-registration.dto';
 import { SearchAdminUsersDto } from './dto/search-admin-users.dto';
+import { maskNickname } from './utils/nickname-mask.util';
 import { SearchRegistrationReviewsDto } from './dto/search-registration-reviews.dto';
 import {
   UserApprovalDetailDto,
@@ -175,6 +176,10 @@ export class UserService {
       select: ['nickname'],
     });
     return profile?.nickname ?? null;
+  }
+
+  async getMaskedNicknameByUserId(userId: string): Promise<string> {
+    return maskNickname(await this.getNicknameByUserId(userId));
   }
 
   async getNameByUserId(userId: string): Promise<string | null> {

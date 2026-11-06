@@ -19,6 +19,7 @@ import { AuditTargetType } from '../admins/domain/enums/audit-target-type.enum';
 import { AuditLogEntity } from '../admins/infrastructure/entities/audit-log.entity';
 import { BanksService } from '../banks/banks.service';
 import { CoinService } from '../coins/coin.service';
+import type { NotificationCopyRole } from '../notifications/domain/constants/notification.constants';
 import { NotificationEventType } from '../notifications/domain/enums/notification-event-type.enum';
 import { NotificationReferenceType } from '../notifications/domain/enums/notification-reference-type.enum';
 import { NotificationService } from '../notifications/notification.service';
@@ -103,7 +104,7 @@ import { TradeEntity } from './infrastructure/entities/trade.entity';
 import { DisputeRealtimePublisher } from './realtime/dispute-realtime.publisher';
 import { TradeRealtimePublisher } from './realtime/trade-realtime.publisher';
 import { DisputeEvidenceStorage } from './dispute-evidence.storage';
-import { maskNickname } from './utils/nickname-mask.util';
+import { maskNickname } from '../users/utils/nickname-mask.util';
 
 export type SellerBankSnapshot = {
   bankAccountId: string;
@@ -350,15 +351,11 @@ export class TradeService {
         actorUserId: userId,
         metadata: { late },
       });
-      await this.notificationService.enqueueTradePushInTransaction(manager, {
+      await this.enqueueTradeRecipientPushInTransaction(manager, {
         eventType: NotificationEventType.TRADE_PAYMENT_REPORTED,
         actorUserId: userId,
-        referenceType: NotificationReferenceType.TRADE,
-        referenceId: trade.id,
-        deepLink: `/trade?tradeId=${trade.id}`,
-        recipientUserId: trade.sellerUserId,
-        recipientRole: 'SELLER',
-        tradeId: trade.id,
+        trade,
+        role: 'SELLER',
       });
     });
 
@@ -406,15 +403,11 @@ export class TradeService {
         actorType: TradeEventActorType.BUYER,
         actorUserId: userId,
       });
-      await this.notificationService.enqueueTradePushInTransaction(manager, {
+      await this.enqueueTradeRecipientPushInTransaction(manager, {
         eventType: NotificationEventType.TRADE_PAYMENT_REPORT_WITHDRAWN,
         actorUserId: userId,
-        referenceType: NotificationReferenceType.TRADE,
-        referenceId: trade.id,
-        deepLink: `/trade?tradeId=${trade.id}`,
-        recipientUserId: trade.sellerUserId,
-        recipientRole: 'SELLER',
-        tradeId: trade.id,
+        trade,
+        role: 'SELLER',
       });
     });
 
@@ -1582,27 +1575,11 @@ export class TradeService {
         deepLink: completedDeepLink,
       });
     }
-    await this.notificationService.enqueueTradePushInTransaction(manager, {
+    await this.enqueueTradePartyPushInTransaction(manager, {
       eventType: NotificationEventType.TRADE_COMPLETED,
       actorUserId: null,
-      referenceType: NotificationReferenceType.TRADE,
-      referenceId: trade.id,
+      trade,
       deepLink: completedDeepLink,
-      recipientUserId: trade.buyerUserId,
-      recipientRole: 'BUYER',
-      tradeId: trade.id,
-      buyOrderId: trade.buyOrderId,
-    });
-    await this.notificationService.enqueueTradePushInTransaction(manager, {
-      eventType: NotificationEventType.TRADE_COMPLETED,
-      actorUserId: null,
-      referenceType: NotificationReferenceType.TRADE,
-      referenceId: trade.id,
-      deepLink: completedDeepLink,
-      recipientUserId: trade.sellerUserId,
-      recipientRole: 'SELLER',
-      tradeId: trade.id,
-      buyOrderId: trade.buyOrderId,
     });
 
     return trade;
@@ -1847,26 +1824,46 @@ export class TradeService {
       deepLink?: string;
     },
   ): Promise<void> {
-    const deepLink = input.deepLink ?? `/trade?tradeId=${input.trade.id}`;
-    const base = {
+    await this.enqueueTradeRecipientPushInTransaction(manager, {
+      ...input,
+      role: 'BUYER',
+    });
+    await this.enqueueTradeRecipientPushInTransaction(manager, {
+      ...input,
+      role: 'SELLER',
+    });
+  }
+
+  private async enqueueTradeRecipientPushInTransaction(
+    manager: EntityManager,
+    input: {
+      eventType: NotificationEventType;
+      actorUserId: string | null;
+      trade: TradeEntity;
+      role: NotificationCopyRole;
+      deepLink?: string;
+    },
+  ): Promise<void> {
+    const { trade, role } = input;
+    const recipientUserId =
+      role === 'BUYER' ? trade.buyerUserId : trade.sellerUserId;
+    const counterpartyUserId =
+      role === 'BUYER' ? trade.sellerUserId : trade.buyerUserId;
+    await this.notificationService.enqueueTradePushInTransaction(manager, {
+      eventType: input.eventType,
       actorUserId: input.actorUserId,
       referenceType: NotificationReferenceType.TRADE,
-      referenceId: input.trade.id,
-      deepLink,
-      tradeId: input.trade.id,
-      buyOrderId: input.trade.buyOrderId,
-    };
-    await this.notificationService.enqueueTradePushInTransaction(manager, {
-      ...base,
-      eventType: input.eventType,
-      recipientUserId: input.trade.buyerUserId,
-      recipientRole: 'BUYER',
-    });
-    await this.notificationService.enqueueTradePushInTransaction(manager, {
-      ...base,
-      eventType: input.eventType,
-      recipientUserId: input.trade.sellerUserId,
-      recipientRole: 'SELLER',
+      referenceId: trade.id,
+      deepLink: input.deepLink ?? `/trade?tradeId=${trade.id}`,
+      recipientUserId,
+      recipientRole: role,
+      snapshot: {
+        coinAmount: trade.coinAmount,
+        counterpartyNicknameMasked:
+          await this.userService.getMaskedNicknameByUserId(counterpartyUserId),
+      },
+      tradeId: trade.id,
+      buyOrderId: trade.buyOrderId,
     });
   }
 

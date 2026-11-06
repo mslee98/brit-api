@@ -17,7 +17,10 @@ import { SellOrderCoinLotEntity } from '../orders/infrastructure/entities/sell-o
 import { SellOrderEntity } from '../orders/infrastructure/entities/sell-order.entity';
 import { NotificationEventType } from '../notifications/domain/enums/notification-event-type.enum';
 import { NotificationReferenceType } from '../notifications/domain/enums/notification-reference-type.enum';
-import { NotificationService } from '../notifications/notification.service';
+import {
+  NotificationService,
+  type NotificationTradeSnapshot,
+} from '../notifications/notification.service';
 import { TradeStatus } from '../trades/domain/enums/trade-status.enum';
 import {
   computeCompletionRatePct,
@@ -25,7 +28,7 @@ import {
 } from '../trades/domain/trade-completion-rate';
 import { TradeEntity } from '../trades/infrastructure/entities/trade.entity';
 import { TradeService } from '../trades/trade.service';
-import { maskNickname } from '../trades/utils/nickname-mask.util';
+import { maskNickname } from '../users/utils/nickname-mask.util';
 import { UserBankAccountStatus } from '../users/domain/enums/user-bank-account-status.enum';
 import { UserStatus } from '../users/domain/enums/user-status.enum';
 import { UserService } from '../users/user.service';
@@ -429,6 +432,10 @@ export class MatchingService {
       deepLink: `/trade/sell/${sellOrder.id}`,
       recipientUserId: sellOrder.sellerUserId,
       recipientRole: 'SELLER',
+      snapshot: await this.buildNotificationSnapshot(
+        tradeRequest.requestedCoinAmount,
+        buyOrder.buyerUserId,
+      ),
       sellOrderId: sellOrder.id,
     });
 
@@ -620,6 +627,10 @@ export class MatchingService {
         deepLink: `/trade?tradeId=${trade.id}`,
         recipientUserId: buyOrder.buyerUserId,
         recipientRole: 'BUYER',
+        snapshot: await this.buildNotificationSnapshot(
+          trade.coinAmount,
+          sellerUserId,
+        ),
         tradeId: trade.id,
         buyOrderId: buyOrder.id,
       });
@@ -681,6 +692,10 @@ export class MatchingService {
             : `/trade/matching/${request.buyOrderId}`,
         recipientUserId: request.buyerUserId,
         recipientRole: 'BUYER',
+        snapshot: await this.buildNotificationSnapshot(
+          request.requestedCoinAmount,
+          sellerUserId,
+        ),
         buyOrderId: request.buyOrderId,
       });
 
@@ -1307,6 +1322,17 @@ export class MatchingService {
    * 구매자 귀책 취소: 입금 전 구매자 취소, 입금 시한 초과 후 미입금 확정.
    * 분모 0 → null.
    */
+  private async buildNotificationSnapshot(
+    coinAmount: string,
+    counterpartyUserId: string,
+  ): Promise<NotificationTradeSnapshot> {
+    return {
+      coinAmount,
+      counterpartyNicknameMasked:
+        await this.userService.getMaskedNicknameByUserId(counterpartyUserId),
+    };
+  }
+
   private async loadBuyerSummary(
     buyerUserId: string,
     manager?: EntityManager,

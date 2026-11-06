@@ -18,10 +18,11 @@ import {
 import { Observable } from 'rxjs';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { NotificationInboxItemResponseDto } from './dto/notification-inbox-item-response.dto';
+import { NotificationInboxCountsResponseDto } from './dto/notification-inbox-counts-response.dto';
+import { SearchNotificationDto } from './dto/search-notification.dto';
 import { NotificationStreamService } from './notification-stream.service';
 import { NotificationService } from './notification.service';
 
@@ -39,12 +40,13 @@ export class UserNotificationsController {
   @ApiOperation({ summary: '내 알림 목록' })
   async list(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() query: PaginationQueryDto,
+    @Query() query: SearchNotificationDto,
   ) {
     const result = await this.notificationService.listForRecipient(
       user.userId,
       query.page,
       query.size,
+      query.filter,
     );
     return {
       items: result.items.map((item) =>
@@ -58,6 +60,14 @@ export class UserNotificationsController {
   @ApiOperation({ summary: '미읽음 알림 개수' })
   unreadCount(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationService.countUnread(user.userId);
+  }
+
+  @Get('counts')
+  @ApiOperation({ summary: '미읽음·처리 필요 알림 개수' })
+  counts(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<NotificationInboxCountsResponseDto> {
+    return this.notificationService.countInbox(user.userId);
   }
 
   @Patch('read-all')

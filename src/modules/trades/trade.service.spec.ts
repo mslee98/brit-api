@@ -832,6 +832,9 @@ describe('P0-6 TradeService', () => {
             getNicknameByUserId: jest.fn(async (userId: string) =>
               userId === BUYER_ID ? '이구매' : '김민성',
             ),
+            getMaskedNicknameByUserId: jest.fn(async (userId: string) =>
+              userId === BUYER_ID ? '이**' : '김**',
+            ),
             getAdminPartySummaries: jest.fn(async (userIds: string[]) => {
               const map = new Map();
               for (const userId of userIds) {
