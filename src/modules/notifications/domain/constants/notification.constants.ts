@@ -75,7 +75,7 @@ export const NOTIFICATION_POLICY: Record<
     priority: NotificationPriority.HIGH,
     ttlSeconds: 180,
     title: '구매 신청이 왔어요',
-    body: '구매 신청이 왔어요',
+    body: '시간 안에 수락하면 거래가 시작돼요',
   },
   [NotificationEventType.TRADE_REQUEST_ACCEPTED]: {
     eventType: NotificationEventType.TRADE_REQUEST_ACCEPTED,
@@ -85,7 +85,7 @@ export const NOTIFICATION_POLICY: Record<
     priority: NotificationPriority.HIGH,
     ttlSeconds: 86_400,
     title: '거래가 성사됐어요',
-    body: '거래가 성사됐어요. 입금해 주세요',
+    body: "판매자 계좌로 입금하고 '입금했어요'를 눌러 주세요",
   },
   [NotificationEventType.TRADE_PAYMENT_REPORTED]: {
     eventType: NotificationEventType.TRADE_PAYMENT_REPORTED,
@@ -161,7 +161,7 @@ export const NOTIFICATION_POLICY: Record<
     priority: NotificationPriority.NORMAL,
     ttlSeconds: 86_400,
     title: '거래가 취소됐어요',
-    body: '거래가 취소됐어요',
+    body: '자세한 내용은 거래 화면에서 확인해 주세요',
   },
   [NotificationEventType.DISPUTE_OPENED]: {
     eventType: NotificationEventType.DISPUTE_OPENED,
