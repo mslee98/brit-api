@@ -16,6 +16,7 @@ P0-1 ~ P0-6까지 **실제로 들어간 코드**를 이후 작업에서 참조�
 | P0-7 분쟁 (M1~M3) | [p0-7-disputes.md](./p0-7-disputes.md) | deny/open → DISPUTED, 큐·배정, 삼자 채팅 REST, admin resolve |
 | Admin Foundation | [p0-admin-foundation.md](./p0-admin-foundation.md) | 관리자 인증·권한·감사·은행 |
 | 알림 | [p0-notifications.md](./p0-notifications.md) | 사건 1 + 수신자 N, 처리 필요 판정, Push outbox |
+| 거래내역 | [p0-transactions.md](./p0-transactions.md) | P2P·Brit 구매·업체 전환·조정 통합 목록, 월 요약 |
 
 P0-5b M1~M7(백엔드·Front·Push) 완료. 알림 Inbox·Push는 [p0-notifications.md](./p0-notifications.md). P0-7 M3 Socket·M4 철회/매크로/증빙까지 완료.
 

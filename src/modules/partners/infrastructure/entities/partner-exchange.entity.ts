@@ -32,6 +32,7 @@ import { UserPartnerLinkEntity } from './user-partner-link.entity';
   'status',
   'requestedAt',
 ])
+@Index('ix_partner_exchanges_user_requested', ['userId', 'requestedAt'])
 export class PartnerExchangeEntity {
   @PrimaryGeneratedColumn('uuid', { name: 'id' })
   id!: string;

@@ -21,6 +21,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { OrdersModule } from './modules/orders/orders.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { TradesModule } from './modules/trades/trades.module';
+import { TransactionsModule } from './modules/transactions/transactions.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -56,6 +57,7 @@ import { UsersModule } from './modules/users/users.module';
     MatchingModule,
     OrdersModule,
     MarketModule,
+    TransactionsModule,
     AuthModule,
   ],
   controllers: [AppController],

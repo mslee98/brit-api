@@ -1,0 +1,9 @@
+/** 통합 거래내역 항목 종류. 원본 테이블 1곳에 대응한다. */
+export enum TransactionKind {
+  P2P_BUY = 'P2P_BUY',
+  P2P_SELL = 'P2P_SELL',
+  BRIT_PURCHASE = 'BRIT_PURCHASE',
+  PARTNER_CHARGE = 'PARTNER_CHARGE',
+  PARTNER_REDEEM = 'PARTNER_REDEEM',
+  ADMIN_ADJUSTMENT = 'ADMIN_ADJUSTMENT',
+}

@@ -106,7 +106,7 @@ Brit 구매 Lot은 보통 `is_sellable = false` (nonSellable). P2P 수취 Lot은
 1. **`debitSellable`로 P2P 판매 완료를 처리하면 안 된다.** available만 깎는다. 매칭된 물량은 lock 상태 → `consumeLockedSellable`.
 2. SellOrder 생성 때 sellable은 이미 wallet에서 locked로 빠진다. Trade 완료 때 sellable을 또 빼면 이중 차감이다.
 3. 금액 비교/가감은 `BigInt` 유틸만. DTO도 문자열 (`"200000"`).
-4. history type 필터(`BRIT_PURCHASE` / `ADMIN_ADJUSTMENT`)에 P2P entry는 아직 안 묶여 있다. `ALL`로 보인다.
+4. history type 필터(`BRIT_PURCHASE` / `ADMIN_ADJUSTMENT`)에 P2P entry는 안 묶여 있다. `ALL`로 보인다. 사용자 거래내역 화면은 이 API 대신 [p0-transactions.md](./p0-transactions.md)의 `GET /v1/me/transactions`를 쓴다.
 5. `audit_logs`는 관리자 credit/debit만. P2P 이전의 감사는 `coin_ledger_entries` + `trade_events`.
 6. Payment 모듈 없음. 실결제 대신 admin complete가 P0 충전 경로다.
 
