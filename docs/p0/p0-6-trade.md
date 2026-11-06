@@ -149,6 +149,6 @@ Trades는 주문 이벤트를 직접 보내지 않는다. 거래 완료로 주�
 5. 완료 거래를 일반 API로 `CANCELLED`로 돌리지 말 것. 원장 역산이 아니라 분쟁/보정.
 6. 쌍방취소는 테이블이 없다. `trade_events` 네 단계. 현금 환불은 오프라인. 시스템이 코인만 예약 해제한다.
 7. 구매자 상세의 계좌번호는 스냅샷 **전문**(이체용). 로그에 찍지 말 것. 판매자 응답에는 계좌를 안 내려준다.
-8. 인앱 알림함은 P0-6에서 안 붙였다. 화면 데이터는 `GET /trades/:id` + `actions`다. 소켓은 그 GET을 언제 다시 칠지의 신호다. 거래 푸시(신청·수락·입금 신고·완료)는 M7 outbox Web Push다.
+8. 거래 화면 데이터는 `GET /trades/:id` + `actions`다. 소켓은 그 GET을 언제 다시 칠지의 신호다. 거래 알림(입금 신고·철회·완료·취소·만료·분쟁)은 인앱 알림함 + outbox Web Push로 간다. 양쪽 당사자 알림은 사건 1건에 수신자 2건이다 ([p0-notifications.md](./p0-notifications.md)).
 9. 분쟁 진입·판결은 **P0-7** ([p0-7-disputes.md](./p0-7-disputes.md)). Workbench(M2)·채팅 REST(M3) 완료. 증빙·매크로는 M4.
 10. P2P로 받은 Coin은 다시 팔 수 있다 (`is_sellable=true`). 정책이 바뀌면 credit 호출부만 보면 된다.

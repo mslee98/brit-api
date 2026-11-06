@@ -16,7 +16,7 @@ Reject|Expire|Cancel → release() → reserved↓ remaining↑ → Buy MATCHING
 
 `trade_requests.origin` (pg enum `trade_request_origin`, 기본 `MATCHING`). 거래소 요청은 `POST /v1/buy-orders/market-request` (body `sellOrderId`, `expectedCoinAmount`, `Idempotency-Key` 필수)로 BuyOrder 생성과 Apply(`MARKET`, 정확 매칭)를 한 트랜잭션에서 처리한다. Apply가 실패하면 BuyOrder도 롤백된다. `MARKET` 요청은 종료 시 MATCHING 탐색으로 돌아가지 않고 구매 주문을 닫으며, 거절 푸시 deepLink는 `/market`. apply body의 `origin`은 하위 호환용으로만 남아 있다.
 
-Push: 기존 `notification_events` / `notification_recipients` + 신규 `user_push_subscriptions` / `notification_outbox` — **M7 미구현 (TODO stub)**.  
+Push: `notification_events` / `notification_recipients` + `user_push_subscriptions` / `notification_outbox` — **구현됨**. 요청 도착(판매자)·수락·거절(구매자) 알림을 같은 TX에서 outbox에 넣고 worker가 Web Push로 보낸다. 상세는 [p0-notifications.md](./p0-notifications.md).  
 신규 `notifications` 테이블 없음.
 
 ## API (코드)
@@ -52,7 +52,7 @@ Push: 기존 `notification_events` / `notification_recipients` + 신규 `user_pu
 
 ## 다음
 
-**M5~M6 Front UX**, **M7 Push Outbox**. curl E2E 후 Front 착수.  
+M5~M6 Front UX·M7 Push Outbox는 반영됨 (Push: [p0-notifications.md](./p0-notifications.md)).  
 p0-5-matching 전면 개정·`/match` deprecate는 M10.
 
 Front(1인 1활성): `FULLY_RESERVED` enum/API 변경 없음. 활성 Sell 조회에 상태만 포함해 pending Sheet·홈 Entry를 유지한다. 상세는 trade-seller-accept-flow §18.

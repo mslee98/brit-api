@@ -1,6 +1,6 @@
 # P0-5b M1~M4 구현 계획 (백엔드 뼈대)
 
-> **상태:** M1~M4 완료 (백엔드 코어 Done). Push·Front는 M5+.  
+> **상태:** M1~M4 완료 (백엔드 코어 Done). 이 문서는 당시 지시서라 본문의 "Push stub/TODO"는 작성 시점 기준이다. Push는 이후 구현됨 → [p0-notifications.md](./p0-notifications.md).  
 > **정책 SoT (M0):** [trade-seller-accept-flow.md](../../../brit-front/docs/process/trade-seller-accept-flow.md)  
 > **요약 메모:** [p0-5b-seller-accept.md](./p0-5b-seller-accept.md)  
 > **현재 코드:** Apply→Accept/Reject/Cancel/Expire + release 단일화. `POST /match` 병행.
