@@ -35,4 +35,6 @@ export enum NotificationEventType {
   DISPUTE_OPENED = 'DISPUTE_OPENED',
   /** 분쟁 해결 → 구매·판매 */
   DISPUTE_RESOLVED = 'DISPUTE_RESOLVED',
+  /** 업체 연결 claim 후 → claim된 BRIT 사용자 (승인 요청) */
+  PARTNER_LINK_APPROVAL_REQUESTED = 'PARTNER_LINK_APPROVAL_REQUESTED',
 }

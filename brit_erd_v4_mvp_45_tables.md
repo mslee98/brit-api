@@ -11,7 +11,7 @@
 4. Brit 직접 구매 Coin은 기본 판매 불가, PARTNER_REDEEM / PARTNER_ADMIN_GRANT Coin은 판매 가능하다.
 5. 완료된 P2P·CHARGE·REDEEM·정산 데이터는 직접 수정·삭제하지 않는다.
 6. 관리자 보정은 원장을 새로 추가하고 audit_logs로 추적한다.
-7. 업체 Coin 잔액은 음수를 허용한다. 별도 credit_limit·risk_control은 MVP에 두지 않는다.
+7. 업체 Coin 잔액은 업체별 `credit_limit`(기본 0)까지 음수를 허용한다. 별도 risk_control은 MVP에 두지 않는다.
 8. 외부 API TIMEOUT은 실패가 아니라 RECONCILIATION_REQUIRED로 처리한다.
 9. 관리자는 초기 MVP에서 대부분의 운영 데이터를 조회할 수 있다. 전체 수익과 주민번호 전체 조회만 별도 권한 컬럼으로 제한한다.
 10. 배너·광고·자동 신용등급·복잡한 Data Scope는 MVP에서 제외한다.
@@ -55,7 +55,7 @@
 | 29 | 정산 | partner_settlements | 기간별 업체 정산서 |
 | 30 | 정산 | partner_settlement_items | 정산서 포함 수수료 근거 |
 | 31 | 정산 | partner_settlement_payments | 부분 입금 이력 |
-| 32 | 업체 Coin | partner_coin_wallets | 업체 Coin 현재 잔액, 음수 허용 |
+| 32 | 업체 Coin | partner_coin_wallets | 업체 Coin 현재 잔액, `credit_limit`까지 음수 허용 |
 | 33 | 업체 Coin | partner_coin_ledger_entries | 업체 Coin 불변 원장 |
 | 34 | 업체 Coin | partner_coin_grants | 업체→업체 관리자 Coin 지급 |
 | 35 | P2P | matching_policies | 매칭/시간/분할 정책 |
@@ -630,19 +630,21 @@ CHARGE에서만 주로 사용.
 | partner_id | UUID PK/FK |
 | available_balance | BIGINT |
 | locked_balance | BIGINT |
+| credit_limit | BIGINT DEFAULT 0, CHECK >= 0 |
 | status | partner_coin_wallet_status |
 | version | BIGINT |
 | created_at | TIMESTAMPTZ |
 | updated_at | TIMESTAMPTZ |
 
-**available_balance는 음수를 허용한다.**
+**available_balance는 `-credit_limit`까지 음수를 허용한다.**
 
-예:
+예 (`credit_limit = 100,000`):
 - balance 0
 - REDEEM 100,000
 - 결과 `available_balance = -100000`
+- 이어서 REDEEM 1 → `PARTNER_CREDIT_LIMIT_EXCEEDED` 거절
 
-MVP에서는 `credit_limit`, `used_credit`, 자동 제한 없음.
+`credit_limit` 기본값은 0이라 한도를 주지 않은 업체는 음수가 되는 REDEEM을 할 수 없다. 한도는 Admin만 바꾼다. `used_credit`·자동 상환은 두지 않는다.
 
 ## 10.2 partner_coin_ledger_entries
 
@@ -988,10 +990,10 @@ PARTNER_EXCHANGES(CHARGE)
 → PARTNER_FEE_ACCRUALS 생성
 ```
 
-## REDEEM 100,000 — 업체 잔액이 0인 경우
+## REDEEM 100,000 — 업체 잔액이 0인 경우 (credit_limit >= 100,000)
 
 ```text
-업체 available_balance = 0
+업체 available_balance = 0, credit_limit = 100,000
 
 PARTNER_EXCHANGES(REDEEM 100,000)
 → 업체 API 포인트 차감 성공
@@ -1002,7 +1004,7 @@ PARTNER_EXCHANGES(REDEEM 100,000)
 → PARTNER_FEE_ACCRUALS 생성
 ```
 
-음수 자체는 정상이다.
+음수 자체는 정상이다. `credit_limit`가 0(기본)이면 이 REDEEM은 `PARTNER_CREDIT_LIMIT_EXCEEDED`로 거절되고 아무것도 기록되지 않는다.
 
 ## P2P 판매
 
@@ -1091,6 +1093,6 @@ Brit ERD v4 MVP의 중심은 테이블 수가 아니라 다음 6가지다.
 3. `Ledger`는 자산 변화의 최종 근거
 4. `Event/Action`은 업무 상태 변화의 근거
 5. 완료 업무는 직접 수정하지 않는다
-6. 업체 Coin은 음수를 허용하지만 원장으로 원인을 반드시 추적한다
+6. 업체 Coin은 `credit_limit`까지 음수를 허용하지만 원장으로 원인을 반드시 추적한다
 
 이 기준을 지키면 현재 45개 테이블로 사용자 앱, 관리자 앱, SDK, P2P, 업체 정산까지 구현할 수 있다.

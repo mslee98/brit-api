@@ -8,4 +8,5 @@ export enum NotificationReferenceType {
   TRADE_REQUEST = 'TRADE_REQUEST',
   TRADE = 'TRADE',
   SELL_ORDER = 'SELL_ORDER',
+  PARTNER_LINK_SESSION = 'PARTNER_LINK_SESSION',
 }

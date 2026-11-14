@@ -150,6 +150,28 @@ export class NotificationService {
     return event;
   }
 
+  /** 인앱·SSE만 (푸시 outbox 없음). unique 충돌은 무시. */
+  async createInAppEvent(input: CreateNotificationEventInput): Promise<void> {
+    try {
+      await this.eventRepository.manager.transaction(async (manager) => {
+        await this.createEventWithRecipientsInTransaction(manager, input);
+      });
+    } catch (error) {
+      if (
+        error instanceof QueryFailedError &&
+        (error as QueryFailedError & { driverError?: { code?: string } })
+          .driverError?.code === '23505'
+      ) {
+        return;
+      }
+      this.logger.warn(
+        `createInAppEvent failed type=${input.eventType} ref=${input.referenceId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   /**
    * 거래 푸시: 같은 업무 TX의 savepoint에서 event + recipient + outbox INSERT.
    * 양쪽 당사자 알림은 사건 1건에 수신자 행이 역할별 문구로 하나씩 붙는다.

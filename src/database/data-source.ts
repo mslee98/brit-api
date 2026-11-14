@@ -48,6 +48,7 @@ import { PartnerFeeAccrualEntity } from '../modules/partners/infrastructure/enti
 import { PartnerFeePolicyEntity } from '../modules/partners/infrastructure/entities/partner-fee-policy.entity';
 import { PartnerMemberEntity } from '../modules/partners/infrastructure/entities/partner-member.entity';
 import { PartnerEntity } from '../modules/partners/infrastructure/entities/partner.entity';
+import { PartnerLinkSessionEntity } from '../modules/partners/infrastructure/entities/partner-link-session.entity';
 import { UserPartnerLinkEntity } from '../modules/partners/infrastructure/entities/user-partner-link.entity';
 
 /** Nest ConfigModule과 동일: `.env.local` 우선, 이어서 `.env` */
@@ -105,6 +106,7 @@ export default new DataSource({
     PartnerClientScopeEntity,
     PartnerClientOriginEntity,
     UserPartnerLinkEntity,
+    PartnerLinkSessionEntity,
     PartnerAssetEntity,
     PartnerExchangeEntity,
     PartnerFeePolicyEntity,

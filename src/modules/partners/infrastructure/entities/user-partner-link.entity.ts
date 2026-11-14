@@ -15,10 +15,16 @@ import { PartnerEntity } from './partner.entity';
 
 /**
  * user_partner_links — 최종 사용자 ↔ 업체 연결 (CHARGE/REDEEM 전제).
+ * POL-LINK-001: 업체별 ACTIVE 연결은 회원 키·BRIT 사용자 양쪽 모두 1개. 해제 행은 이력으로 남긴다.
  */
 @Entity({ name: 'user_partner_links' })
-@Index('ux_user_partner_links_partner_user_key', ['partnerId', 'partnerUserKey'], {
+@Index('ux_user_partner_links_partner_key_active', ['partnerId', 'partnerUserKey'], {
   unique: true,
+  where: `"status" = 'ACTIVE'`,
+})
+@Index('ux_user_partner_links_partner_user_active', ['partnerId', 'userId'], {
+  unique: true,
+  where: `"status" = 'ACTIVE'`,
 })
 export class UserPartnerLinkEntity {
   @PrimaryGeneratedColumn('uuid', { name: 'id' })

@@ -9,6 +9,7 @@ export const ACTIONABLE_NOTIFICATION_TYPES: ReadonlySet<NotificationEventType> =
     NotificationEventType.TRADE_REQUEST_CREATED,
     NotificationEventType.TRADE_PAYMENT_REPORTED,
     NotificationEventType.TRADE_REQUEST_ACCEPTED,
+    NotificationEventType.PARTNER_LINK_APPROVAL_REQUESTED,
   ]);
 
 /**
@@ -40,6 +41,13 @@ export function actionRequiredSql(alias: string): string {
         SELECT 1 FROM trades action_t
         WHERE action_t.id = ${alias}.reference_id
           AND action_t.status = '${TradeStatus.WAITING_BUYER_PAYMENT}'
+      ))
+    OR (${alias}.event_type = '${NotificationEventType.PARTNER_LINK_APPROVAL_REQUESTED}'
+      AND EXISTS (
+        SELECT 1 FROM partner_link_sessions action_pls
+        WHERE action_pls.id = ${alias}.reference_id
+          AND action_pls.status = 'PENDING'
+          AND action_pls.expires_at > NOW()
       ))
   )`;
 }

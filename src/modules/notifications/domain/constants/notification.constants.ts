@@ -183,6 +183,16 @@ export const NOTIFICATION_POLICY: Record<
     title: '분쟁이 해결됐어요',
     body: '분쟁 처리가 완료됐어요',
   },
+  [NotificationEventType.PARTNER_LINK_APPROVAL_REQUESTED]: {
+    eventType: NotificationEventType.PARTNER_LINK_APPROVAL_REQUESTED,
+    recipientRole: 'APPLICANT',
+    inApp: true,
+    push: false,
+    priority: NotificationPriority.HIGH,
+    ttlSeconds: 180,
+    title: '업체 연결 승인이 필요해요',
+    body: 'BRIT 팝업에 표시된 연결을 승인해 주세요',
+  },
 };
 
 export function getNotificationPolicy(

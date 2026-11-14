@@ -139,6 +139,41 @@ export class PartnerDomainException {
     });
   }
 
+  static portalOwnerRequired(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'PARTNER_PORTAL_OWNER_REQUIRED',
+      message: '대표 담당자(OWNER)만 연동 키를 관리할 수 있어요.',
+    });
+  }
+
+  static portalPartnerNotActive(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PORTAL_NOT_ACTIVE',
+      message: '활성 업체만 연동 키를 관리할 수 있어요.',
+    });
+  }
+
+  static portalClientSandboxOnly(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'PARTNER_PORTAL_CLIENT_SANDBOX_ONLY',
+      message: '업체 포털에서는 Sandbox 연동 키만 관리할 수 있어요. 운영 키는 BRIT 운영팀에 요청해 주세요.',
+    });
+  }
+
+  static portalClientScopeNotAllowed(scope: string): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PORTAL_CLIENT_SCOPE_NOT_ALLOWED',
+      message: `업체 포털에서 선택할 수 없는 권한이에요: ${scope}`,
+    });
+  }
+
+  static portalClientLimitExceeded(limit: number): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PORTAL_CLIENT_LIMIT_EXCEEDED',
+      message: `Sandbox 연동 키는 최대 ${limit}개까지 만들 수 있어요.`,
+    });
+  }
+
   static feePolicyNotFound(): NotFoundException {
     return new NotFoundException({
       code: 'PARTNER_FEE_POLICY_NOT_FOUND',
@@ -174,6 +209,20 @@ export class PartnerDomainException {
     });
   }
 
+  static creditLimitExceeded(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_CREDIT_LIMIT_EXCEEDED',
+      message: '업체 마이너스 한도를 넘어 환전할 수 없어요.',
+    });
+  }
+
+  static invalidCreditLimit(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_CREDIT_LIMIT_INVALID',
+      message: '마이너스 한도는 0 이상의 정수여야 해요.',
+    });
+  }
+
   static invalidExchangeAmount(): BadRequestException {
     return new BadRequestException({
       code: 'PARTNER_EXCHANGE_INVALID_AMOUNT',
@@ -191,7 +240,109 @@ export class PartnerDomainException {
   static linkAlreadyExists(): ConflictException {
     return new ConflictException({
       code: 'PARTNER_USER_LINK_ALREADY_EXISTS',
-      message: '이미 연결된 업체 회원 키예요.',
+      message: '이미 다른 BRIT 회원과 연결된 업체 회원 키예요.',
+    });
+  }
+
+  static userAlreadyLinkedOtherKey(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_USER_ALREADY_LINKED',
+      message:
+        '이미 이 업체의 다른 회원 계정과 연결돼 있어요. 기존 연결을 해제한 뒤 다시 시도해 주세요.',
+    });
+  }
+
+  static linkSessionNotFound(): NotFoundException {
+    return new NotFoundException({
+      code: 'PARTNER_LINK_SESSION_NOT_FOUND',
+      message: '연결 요청을 찾을 수 없어요. 업체 화면에서 다시 시도해 주세요.',
+    });
+  }
+
+  static linkSessionExpired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_SESSION_EXPIRED',
+      message: '연결 요청 시간이 지났어요. 업체 화면에서 다시 시도해 주세요.',
+    });
+  }
+
+  static linkSessionAlreadyUsed(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_LINK_SESSION_ALREADY_USED',
+      message: '이미 처리된 연결 요청이에요.',
+    });
+  }
+
+  static linkOriginNotAllowed(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_ORIGIN_NOT_ALLOWED',
+      message: 'returnOrigin이 Client에 등록된 Origin이 아니에요.',
+    });
+  }
+
+  static linkCodeInvalid(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_CODE_INVALID',
+      message: '연결 code가 올바르지 않거나 만료됐어요.',
+    });
+  }
+
+  static linkPairingCodeInvalid(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_PAIRING_CODE_INVALID',
+      message: '연결 코드가 올바르지 않아요. BRIT 팝업에 표시된 숫자를 다시 입력해 주세요.',
+    });
+  }
+
+  static linkPairingCodeExpired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_PAIRING_CODE_EXPIRED',
+      message: '연결 코드가 만료됐어요. 업체 화면에서 다시 연결을 시작해 주세요.',
+    });
+  }
+
+  static linkPairingAttemptsExceeded(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_PAIRING_ATTEMPTS_EXCEEDED',
+      message: '연결 코드 입력 횟수를 초과했어요. 업체 화면에서 다시 연결을 시작해 주세요.',
+    });
+  }
+
+  static linkPairingCodeRequired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_PAIRING_CODE_REQUIRED',
+      message: 'BRIT 팝업에 표시된 4자리 연결 코드를 입력해 주세요.',
+    });
+  }
+
+  /** Embed consent로는 NEW 연결 불가 — BRIT 클라이언트 승인 사용 */
+  static linkClientApprovalRequired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_CLIENT_APPROVAL_REQUIRED',
+      message:
+        '신규 연결은 BRIT 앱·웹에서 연결 코드로 승인해 주세요. 팝업에서는 대기만 합니다.',
+    });
+  }
+
+  static linkSessionClaimedByOther(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_LINK_SESSION_CLAIMED_BY_OTHER',
+      message:
+        '다른 BRIT 계정으로 이미 진행 중인 연결이에요. 팝업에서 계정을 바꾸거나 업체에서 다시 시작해 주세요.',
+    });
+  }
+
+  static linkSessionNotClaimed(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_LINK_SESSION_NOT_CLAIMED',
+      message: '연결 팝업에서 먼저 BRIT에 로그인해 주세요.',
+    });
+  }
+
+  static linkApprovalConflict(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_LINK_APPROVAL_CONFLICT',
+      message: '이 계정으로는 연결할 수 없어요. 안내를 확인해 주세요.',
     });
   }
 
@@ -241,6 +392,56 @@ export class PartnerDomainException {
     return new BadRequestException({
       code: 'PARTNER_LINK_USER_NOT_ACTIVE',
       message: 'ACTIVE 사용자만 업체에 연결할 수 있어요.',
+    });
+  }
+
+  static userNotActiveForExchange(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_EXCHANGE_USER_NOT_ACTIVE',
+      message: 'ACTIVE 사용자만 충전·환전할 수 있어요.',
+    });
+  }
+
+  static paymentIntentNotFound(): NotFoundException {
+    return new NotFoundException({
+      code: 'PARTNER_PAYMENT_INTENT_NOT_FOUND',
+      message: '충전 요청을 찾을 수 없어요. 업체 화면에서 다시 시도해 주세요.',
+    });
+  }
+
+  static paymentIntentExpired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PAYMENT_INTENT_EXPIRED',
+      message: '충전 요청 시간이 지났어요. 업체 화면에서 다시 시도해 주세요.',
+    });
+  }
+
+  static paymentIntentNotAuthorizable(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_PAYMENT_INTENT_NOT_AUTHORIZABLE',
+      message: '이미 처리됐거나 승인할 수 없는 충전 요청이에요.',
+    });
+  }
+
+  static paymentIntentConflict(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_PAYMENT_INTENT_CONFLICT',
+      message: '같은 주문번호로 다른 금액·회원 키가 이미 있어요.',
+    });
+  }
+
+  static paymentIntentUserMismatch(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'PARTNER_PAYMENT_INTENT_USER_MISMATCH',
+      message:
+        '이 BRIT 계정은 해당 업체 회원과 연결되어 있지 않아요. 연결한 계정으로 로그인해 주세요.',
+    });
+  }
+
+  static paymentIntentNotLinked(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PAYMENT_INTENT_NOT_LINKED',
+      message: '먼저 업체와 BRIT 계정을 연결해 주세요.',
     });
   }
 }
