@@ -5,6 +5,7 @@ import {
   HttpCode,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -12,6 +13,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import type { Request } from 'express';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
@@ -23,6 +25,10 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UpdateRegistrationDto } from './dto/update-registration.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import {
+  extractClientIp,
+  extractUserAgent,
+} from './utils/request-client-meta';
 
 @ApiTags('auth')
 /**
@@ -60,8 +66,12 @@ export class AuthController {
   @Post('login')
   @HttpCode(200)
   @ApiOperation({ summary: '로그인' })
-  login(@Body() body: LoginDto) {
-    return this.authService.login(body);
+  login(@Body() body: LoginDto, @Req() req: Request) {
+    return this.authService.login(body, {
+      ipAddress: extractClientIp(req),
+      userAgent: extractUserAgent(req),
+      deviceName: body.deviceName?.trim() || null,
+    });
   }
 
   @Post('refresh')

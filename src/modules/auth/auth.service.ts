@@ -61,6 +61,7 @@ export type CreateSessionTokensOptions = {
   refreshExpiresSec?: number;
   userAgent?: string | null;
   ipAddress?: string | null;
+  deviceName?: string | null;
 };
 
 export type RotateSessionTokensOptions = {
@@ -265,7 +266,14 @@ export class AuthService {
    * 로그인. ACTIVE/PENDING/REJECTED 허용, SUSPENDED/WITHDRAWN 차단.
    * ACTIVE ADMIN/SYS_ADMIN은 관리자 전용 로그인으로 유도한다.
    */
-  async login(dto: LoginDto): Promise<AuthTokensResponse> {
+  async login(
+    dto: LoginDto,
+    meta?: {
+      ipAddress?: string | null;
+      userAgent?: string | null;
+      deviceName?: string | null;
+    },
+  ): Promise<AuthTokensResponse> {
     const user = await this.userService.findByLoginId(dto.loginId);
     if (!user) {
       throw AuthDomainException.invalidCredentials();
@@ -286,6 +294,9 @@ export class AuthService {
     const role = await this.userService.getPrimaryRole(user.id);
     const tokens = await this.createSessionTokens(user.id, role, user.status, {
       clientType: AuthClientType.USER,
+      userAgent: meta?.userAgent ?? null,
+      ipAddress: meta?.ipAddress ?? null,
+      deviceName: meta?.deviceName ?? null,
     });
     await this.userService.touchLastLogin(user.id);
 
@@ -423,6 +434,7 @@ export class AuthService {
   ): Promise<
     Array<{
       id: string;
+      deviceName: string | null;
       userAgent: string | null;
       ipAddress: string | null;
       status: UserSessionStatus;
@@ -433,11 +445,12 @@ export class AuthService {
     }>
   > {
     const rows = await this.sessionRepository.find({
-      where: { userId },
+      where: { userId, status: UserSessionStatus.ACTIVE },
       order: { createdAt: 'DESC' },
     });
     return rows.map((row) => ({
       id: row.id,
+      deviceName: row.deviceName,
       userAgent: row.userAgent,
       ipAddress: row.ipAddress,
       status: row.status,
@@ -462,7 +475,7 @@ export class AuthService {
       },
     );
     if (!result.affected) {
-      throw AuthDomainException.invalidRefreshToken();
+      throw AuthDomainException.sessionNotFound();
     }
   }
 
@@ -574,7 +587,7 @@ export class AuthService {
       refreshTokenHash,
       previousRefreshTokenHash: null,
       deviceId: null,
-      deviceName: null,
+      deviceName: options.deviceName ?? null,
       userAgent: options.userAgent ?? null,
       ipAddress: options.ipAddress ?? null,
       status: UserSessionStatus.ACTIVE,

@@ -9,6 +9,7 @@ import { UsersModule } from '../users/users.module';
 import { AuthGuardsModule } from './auth-guards.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { MeSessionsController } from './me-sessions.controller';
 import { UserSessionEntity } from './infrastructure/entities/user-session.entity';
 
 /**
@@ -30,7 +31,7 @@ import { UserSessionEntity } from './infrastructure/entities/user-session.entity
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, MeSessionsController],
   providers: [AuthService],
   exports: [TypeOrmModule, JwtModule, AuthGuardsModule, AuthService],
 })
