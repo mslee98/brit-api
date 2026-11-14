@@ -1,7 +1,7 @@
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Not, Repository } from 'typeorm';
 
 import {
   buildPaginationMeta,
@@ -13,11 +13,18 @@ import {
   hashAccountNumber,
   maskAccountNumber,
 } from '../../common/utils/account-crypto.util';
+import { verifyTransactionPin } from '../../common/utils/password.util';
+import { AuditLogService } from '../admins/audit-log.service';
+import { AuditActionType } from '../admins/domain/enums/audit-action-type.enum';
+import { AuditTargetType } from '../admins/domain/enums/audit-target-type.enum';
 import { AuthService } from '../auth/auth.service';
 import { UpdateRegistrationDto } from '../auth/dto/update-registration.dto';
+import { AuthDomainException } from '../auth/exceptions/auth.exceptions';
 import { BankEntity } from '../banks/infrastructure/entities/bank.entity';
 import { CoinService } from '../coins/coin.service';
+import { CoinPurchaseStatus } from '../coins/domain/enums/coin-purchase-status.enum';
 import { CoinWalletStatus } from '../coins/domain/enums/coin-wallet-status.enum';
+import { CoinPurchaseEntity } from '../coins/infrastructure/entities/coin-purchase.entity';
 import { CoinWalletResponseDto } from '../coins/dto/coin-response.dto';
 import { NotificationEventType } from '../notifications/domain/enums/notification-event-type.enum';
 import { NotificationReferenceType } from '../notifications/domain/enums/notification-reference-type.enum';
@@ -40,6 +47,7 @@ import { RoleGrantStatus } from './domain/enums/role-grant-status.enum';
 import { UserBankAccountStatus } from './domain/enums/user-bank-account-status.enum';
 import { UserRole } from './domain/enums/user-role.enum';
 import { UserStatus } from './domain/enums/user-status.enum';
+import { AdminOpsSummaryDto } from './dto/admin-ops-summary.dto';
 import {
   AdminUserDetailDto,
   AdminUserListItemDto,
@@ -136,6 +144,8 @@ export class UserService {
     private readonly coinService: CoinService,
     @Inject(forwardRef(() => AuthService))
     private readonly authService: AuthService,
+    @Inject(forwardRef(() => AuditLogService))
+    private readonly auditLogService: AuditLogService,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(UserProfileEntity)
@@ -188,6 +198,48 @@ export class UserService {
       select: ['name'],
     });
     return profile?.name ?? null;
+  }
+
+  /**
+   * 거래 PIN 검증. 성공 시 실패 카운트 초기화, 실패 시 카운트·잠금.
+   * 형식은 호출 측에서 6자리 숫자로 검증한다.
+   */
+  async verifyTransactionPin(userId: string, pin: string): Promise<void> {
+    const profile = await this.profileRepository.findOne({
+      where: { userId },
+    });
+    if (!profile?.pinHash) {
+      throw AuthDomainException.pinIncorrect();
+    }
+
+    const now = new Date();
+    if (profile.pinLockedUntil && profile.pinLockedUntil > now) {
+      throw AuthDomainException.pinLocked(profile.pinLockedUntil);
+    }
+
+    const pepper = this.configService.getOrThrow<string>(
+      'TRANSACTION_PIN_PEPPER',
+    );
+    const ok = await verifyTransactionPin(pin, pepper, profile.pinHash);
+    if (ok) {
+      if (profile.pinFailedCount !== 0 || profile.pinLockedUntil) {
+        profile.pinFailedCount = 0;
+        profile.pinLockedUntil = null;
+        await this.profileRepository.save(profile);
+      }
+      return;
+    }
+
+    const nextFailed = profile.pinFailedCount + 1;
+    profile.pinFailedCount = nextFailed;
+    if (nextFailed >= PIN_MAX_FAILURES) {
+      profile.pinLockedUntil = new Date(now.getTime() + PIN_LOCK_MS);
+      profile.pinFailedCount = 0;
+      await this.profileRepository.save(profile);
+      throw AuthDomainException.pinLocked(profile.pinLockedUntil);
+    }
+    await this.profileRepository.save(profile);
+    throw AuthDomainException.pinIncorrect(PIN_MAX_FAILURES - nextFailed);
   }
 
   /** 관리자 P2P 화면용 구매자·판매자 요약 batch 조회 */
@@ -1214,6 +1266,45 @@ export class UserService {
     };
   }
 
+  async getAdminOpsSummary(): Promise<AdminOpsSummaryDto> {
+    const closedTrades = [TradeStatus.COMPLETED, TradeStatus.CANCELLED];
+    const closedDisputes = [
+      TradeDisputeStatus.RESOLVED,
+      TradeDisputeStatus.CANCELLED,
+    ];
+
+    const [
+      ongoingTrades,
+      openDisputes,
+      unassignedDisputes,
+      pendingRegistrations,
+      pendingCoinPurchases,
+    ] = await Promise.all([
+      this.dataSource.getRepository(TradeEntity).count({
+        where: { status: Not(In(closedTrades)) },
+      }),
+      this.dataSource.getRepository(TradeDisputeEntity).count({
+        where: { status: Not(In(closedDisputes)) },
+      }),
+      this.dataSource.getRepository(TradeDisputeEntity).count({
+        where: { status: TradeDisputeStatus.OPEN_UNASSIGNED },
+      }),
+      this.userRepository.count({ where: { status: UserStatus.PENDING } }),
+      this.dataSource.getRepository(CoinPurchaseEntity).count({
+        where: { status: CoinPurchaseStatus.PENDING },
+      }),
+    ]);
+
+    return {
+      updatedAt: new Date().toISOString(),
+      ongoingTrades,
+      openDisputes,
+      unassignedDisputes,
+      pendingRegistrations,
+      pendingCoinPurchases,
+    };
+  }
+
   private async findLatestBankAccount(
     userId: string,
   ): Promise<UserBankAccountEntity | null> {
@@ -1300,6 +1391,42 @@ export class UserService {
       user.suspensionReason = null;
       user.suspendedByUserId = null;
       await userRepository.save(user);
+    });
+  }
+
+  async terminateAllSessions(
+    adminUserId: string,
+    userId: string,
+    ipAddress: string | null,
+  ): Promise<{ revokedSessionCount: number }> {
+    return this.dataSource.transaction(async (manager) => {
+      const user = await manager.getRepository(UserEntity).findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw UserAdminDomainException.notFound();
+      }
+
+      const revokedSessionCount =
+        await this.authService.revokeAllActiveSessionsInTransaction(
+          manager,
+          userId,
+          'ADMIN_TERMINATED_SESSIONS',
+        );
+
+      await this.auditLogService.writeInTransaction(manager, {
+        actorUserId: adminUserId,
+        actionType: AuditActionType.REVOKE_USER_SESSIONS,
+        targetType: AuditTargetType.USER,
+        targetId: userId,
+        beforeData: null,
+        afterData: { revokedSessionCount },
+        reason: null,
+        ipAddress,
+      });
+
+      return { revokedSessionCount };
     });
   }
 
@@ -1484,6 +1611,10 @@ function maskResidentRegistrationNumber(rrn: string): string {
   }
   return `${digits.slice(0, 6)}*******`;
 }
+
+/** 거래 PIN 연속 실패 한도 · 잠금 시간 (B3 Embed 승인) */
+const PIN_MAX_FAILURES = 5;
+const PIN_LOCK_MS = 15 * 60 * 1000;
 
 function mapWalletStatus(
   userStatus: UserStatus,

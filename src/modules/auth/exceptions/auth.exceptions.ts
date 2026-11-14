@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -44,6 +45,26 @@ export class AuthDomainException {
     return new BadRequestException({
       code: 'INVALID_PIN',
       message: '거래 PIN은 6자리 숫자여야 해요.',
+    });
+  }
+
+  /** 거래 PIN 불일치 (연속 실패 카운트 증가 후) */
+  static pinIncorrect(remainingAttempts?: number): UnauthorizedException {
+    const hint =
+      typeof remainingAttempts === 'number' && remainingAttempts >= 0
+        ? ` (남은 횟수 ${remainingAttempts}회)`
+        : '';
+    return new UnauthorizedException({
+      code: 'PIN_INCORRECT',
+      message: `거래 PIN이 올바르지 않아요.${hint}`,
+    });
+  }
+
+  static pinLocked(lockedUntil: Date): ForbiddenException {
+    return new ForbiddenException({
+      code: 'PIN_LOCKED',
+      message: '거래 PIN 입력이 잠겼어요. 잠시 후 다시 시도해 주세요.',
+      lockedUntil: lockedUntil.toISOString(),
     });
   }
 
@@ -170,6 +191,13 @@ export class AuthDomainException {
     return new ForbiddenException({
       code: 'ADMIN_LOGIN_REQUIRED',
       message: '관리자 전용 로그인 화면을 이용해 주세요.',
+    });
+  }
+
+  static sessionNotFound(): NotFoundException {
+    return new NotFoundException({
+      code: 'AUTH_SESSION_NOT_FOUND',
+      message: '로그인 세션을 찾을 수 없어요.',
     });
   }
 }

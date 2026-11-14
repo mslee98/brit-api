@@ -6,6 +6,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AdminsModule } from '../admins/admins.module';
 import { CoinsModule } from '../coins/coins.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AdminOpsSummaryController } from './admin-ops-summary.controller';
 import { AdminUserApprovalsController } from './admin-user-approvals.controller';
 import { AdminUserController } from './admin-user.controller';
 import { UserApprovalReviewEntity } from './infrastructure/entities/user-approval-review.entity';
@@ -38,7 +39,11 @@ import { UserService } from './user.service';
     forwardRef(() => AuthModule),
     forwardRef(() => AdminsModule),
   ],
-  controllers: [AdminUserApprovalsController, AdminUserController],
+  controllers: [
+    AdminUserApprovalsController,
+    AdminUserController,
+    AdminOpsSummaryController,
+  ],
   providers: [UserService],
   exports: [TypeOrmModule, UserService],
 })
