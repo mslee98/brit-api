@@ -7,8 +7,10 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -20,6 +22,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { resolveClientIp } from '../../common/utils/client-ip.util';
 import { ActiveAdminGuard } from '../admins/guards/active-admin.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from './domain/enums/user-role.enum';
@@ -77,6 +80,21 @@ export class AdminUserController {
     @Param('userId', ParseUUIDPipe) userId: string,
   ): Promise<void> {
     await this.userService.unsuspendUser(admin.userId, userId);
+  }
+
+  @Post(':userId/sessions/terminate-all')
+  @HttpCode(200)
+  @ApiOperation({ summary: '사용자 로그인 세션 전부 종료' })
+  terminateAllSessions(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Req() req: Request,
+  ) {
+    return this.userService.terminateAllSessions(
+      admin.userId,
+      userId,
+      resolveClientIp(req),
+    );
   }
 
   @Post(':userId/withdraw')
