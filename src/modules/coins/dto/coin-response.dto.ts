@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import type { PaginationMeta } from '../../../common/dto/pagination-query.dto';
+
 import { CoinBalanceType } from '../domain/enums/coin-balance-type.enum';
 import { CoinLedgerDirection } from '../domain/enums/coin-ledger-direction.enum';
 import { CoinLedgerEntryType } from '../domain/enums/coin-ledger-entry-type.enum';
@@ -185,4 +187,20 @@ export class CoinPurchaseResponseDto {
 
   @ApiProperty()
   createdAt!: Date;
+}
+
+export class CoinPurchaseListItemDto extends CoinPurchaseResponseDto {
+  @ApiProperty()
+  loginId!: string;
+
+  @ApiProperty({ nullable: true })
+  name!: string | null;
+}
+
+export class CoinPurchaseListResponseDto {
+  @ApiProperty({ type: [CoinPurchaseListItemDto] })
+  items!: CoinPurchaseListItemDto[];
+
+  @ApiProperty()
+  pagination!: PaginationMeta;
 }

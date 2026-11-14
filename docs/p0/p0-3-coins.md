@@ -35,6 +35,7 @@ wallet.sellable / lockedSellable / nonSellable 은 lot 합과 맞춰 움직인�
 - `GET /admin/users/:userId/coins/wallet|history|lots|lots/:lotId`
 - `POST /admin/users/:userId/coins/credit|debit` — **`Idempotency-Key` UUID 필수**
 - `POST /admin/users/:userId/coin-purchases` → PENDING
+- `GET /admin/coin-purchases?status&userId&page&size` → 구매 목록
 - `POST /admin/coin-purchases/:purchaseId/complete` → Lot+Ledger+Wallet (멱등 아님, 재호출 409)
 
 ### 관리자 credit/debit 멱등성

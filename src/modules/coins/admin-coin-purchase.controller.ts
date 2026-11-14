@@ -1,9 +1,11 @@
 import {
   Controller,
+  Get,
   HttpCode,
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -21,7 +23,11 @@ import { ActiveAdminGuard } from '../admins/guards/active-admin.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/domain/enums/user-role.enum';
 import { CoinService } from './coin.service';
-import { CoinWalletResponseDto } from './dto/coin-response.dto';
+import {
+  CoinPurchaseListResponseDto,
+  CoinWalletResponseDto,
+} from './dto/coin-response.dto';
+import { SearchCoinPurchasesDto } from './dto/search-coin-purchases.dto';
 
 /**
  * Brit Coin 구매 완료 처리.
@@ -34,6 +40,15 @@ import { CoinWalletResponseDto } from './dto/coin-response.dto';
 @Controller('admin/coin-purchases')
 export class AdminCoinPurchaseController {
   constructor(private readonly coinService: CoinService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Brit Coin 구매 목록' })
+  @ApiOkResponse({ type: CoinPurchaseListResponseDto })
+  list(
+    @Query() query: SearchCoinPurchasesDto,
+  ): Promise<CoinPurchaseListResponseDto> {
+    return this.coinService.listCoinPurchases(query);
+  }
 
   @Post(':purchaseId/complete')
   @HttpCode(200)

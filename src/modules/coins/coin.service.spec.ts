@@ -17,6 +17,7 @@ import { CoinWalletStatus } from './domain/enums/coin-wallet-status.enum';
 import { AdminCoinAdjustmentRequestEntity } from './infrastructure/entities/admin-coin-adjustment-request.entity';
 import { AuditLogEntity } from './infrastructure/entities/audit-log.entity';
 import { CoinLedgerEntryEntity } from './infrastructure/entities/coin-ledger-entry.entity';
+import { CoinPurchaseStatus } from './domain/enums/coin-purchase-status.enum';
 import { CoinPurchaseEntity } from './infrastructure/entities/coin-purchase.entity';
 import { UserCoinLotEntity } from './infrastructure/entities/user-coin-lot.entity';
 import { UserCoinWalletEntity } from './infrastructure/entities/user-coin-wallet.entity';
@@ -177,7 +178,26 @@ function makeRepo<T extends { id?: string }>(
         })
         .map((lot) => ({ ...lot }));
     },
-    findAndCount: async () => [[], 0],
+    findAndCount: (async (options?: {
+      where?: { status?: string; userId?: string };
+    }) => {
+      if (kind !== 'purchases') {
+        return [[], 0];
+      }
+      const where = options?.where ?? {};
+      const rows = [...store.purchases.values()].filter((purchase) => {
+        if (where.status && purchase.status !== where.status) return false;
+        if (where.userId && purchase.userId !== where.userId) return false;
+        return true;
+      });
+      return [
+        rows.map((purchase) => ({
+          ...purchase,
+          user: store.users.get(purchase.userId),
+        })),
+        rows.length,
+      ];
+    }) as unknown as Repository<T>['findAndCount'],
     createQueryBuilder: () => ({
       where: () => ({
         orderBy: () => ({
@@ -299,6 +319,26 @@ describe('CoinService P0 acceptance', () => {
     const wallet = await service.getWallet(userId);
     expect(wallet.totalBalance).toBe('0');
     expect(wallet.nonSellableBalance).toBe('0');
+  });
+
+  it('lists pending purchases with the user name', async () => {
+    const user = store.users.get(userId);
+    if (!user) throw new Error('missing user');
+    user.loginId = 'buyer';
+    user.profile = { name: '홍길동' } as UserEntity['profile'];
+
+    await service.createCoinPurchase(adminId, userId, '100000');
+    const page = await service.listCoinPurchases({
+      page: 1,
+      size: 20,
+      status: CoinPurchaseStatus.PENDING,
+      userId,
+    });
+
+    expect(page.pagination.totalItems).toBe(1);
+    expect(page.items[0]?.loginId).toBe('buyer');
+    expect(page.items[0]?.name).toBe('홍길동');
+    expect(page.items[0]?.amount).toBe('100000');
   });
 
   it('③ complete purchase credits non_sellable + lot + ledger', async () => {

@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import {
   DataSource,
   EntityManager,
+  FindOptionsWhere,
   In,
   QueryFailedError,
   Repository,
@@ -34,10 +35,12 @@ import {
 import {
   CoinHistoryItemDto,
   CoinLotItemDto,
+  CoinPurchaseListResponseDto,
   CoinPurchaseResponseDto,
   CoinWalletResponseDto,
 } from './dto/coin-response.dto';
 import { SearchCoinHistoryDto, SearchCoinLotsDto } from './dto/search-coin.dto';
+import { SearchCoinPurchasesDto } from './dto/search-coin-purchases.dto';
 import { CoinDomainException } from './exceptions/coin.exceptions';
 import { AdminCoinAdjustmentRequestEntity } from './infrastructure/entities/admin-coin-adjustment-request.entity';
 import { AuditLogEntity } from './infrastructure/entities/audit-log.entity';
@@ -261,6 +264,37 @@ export class CoinService {
       throw CoinDomainException.lotNotFound();
     }
     return CoinLotItemDto.from(lot);
+  }
+
+  async listCoinPurchases(
+    query: SearchCoinPurchasesDto,
+  ): Promise<CoinPurchaseListResponseDto> {
+    const page = query.page ?? 1;
+    const size = query.size ?? 20;
+    const where: FindOptionsWhere<CoinPurchaseEntity> = {};
+    if (query.status) {
+      where.status = query.status;
+    }
+    if (query.userId) {
+      where.userId = query.userId;
+    }
+
+    const [rows, totalItems] = await this.purchaseRepository.findAndCount({
+      where,
+      relations: { user: { profile: true } },
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * size,
+      take: size,
+    });
+
+    return {
+      items: rows.map((row) => ({
+        ...this.toPurchaseResponse(row),
+        loginId: row.user?.loginId ?? '',
+        name: row.user?.profile?.name ?? null,
+      })),
+      pagination: buildPaginationMeta(page, size, totalItems),
+    };
   }
 
   async createCoinPurchase(
