@@ -31,6 +31,17 @@ import { UserPartnerLinkEntity } from './infrastructure/entities/user-partner-li
 import { PartnerCoinService } from './partner-coin.service';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 import { calculateTotalFee } from './utils/partner-fee.util';
+import { maskPartnerUserKey } from './utils/mask-partner-user-key';
+
+export type MePartnerLinkItemDto = {
+  linkId: string;
+  partnerId: string;
+  partnerName: string;
+  partnerCode: string;
+  partnerUserKeyMasked: string;
+  status: UserPartnerLinkStatus;
+  linkedAt: string;
+};
 
 const EXCHANGE_REF = 'PARTNER_EXCHANGE';
 
@@ -90,36 +101,174 @@ export class PartnerExchangeService {
     }
 
     const key = dto.partnerUserKey.trim();
+    const existing = await this.findActiveLinkConflict(
+      partnerId,
+      dto.userId,
+      key,
+    );
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      return await this.linkRepository.save(
+        this.linkRepository.create({
+          partnerId,
+          userId: dto.userId,
+          partnerUserKey: key,
+          status: UserPartnerLinkStatus.ACTIVE,
+          linkedAt: new Date(),
+        }),
+      );
+    } catch (error) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+      const raced = await this.findActiveLinkConflict(
+        partnerId,
+        dto.userId,
+        key,
+      );
+      if (raced) {
+        return raced;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * POL-LINK-001: 같은 회원 키·같은 사용자의 ACTIVE 연결은 그대로 반환하고,
+   * 한쪽만 겹치면 거절한다. 겹치는 연결이 없으면 null.
+   */
+  private async findActiveLinkConflict(
+    partnerId: string,
+    userId: string,
+    partnerUserKey: string,
+  ): Promise<UserPartnerLinkEntity | null> {
     const byKey = await this.linkRepository.findOne({
-      where: { partnerId, partnerUserKey: key },
+      where: { partnerId, partnerUserKey, status: UserPartnerLinkStatus.ACTIVE },
     });
-    if (byKey && byKey.status === UserPartnerLinkStatus.ACTIVE) {
-      if (byKey.userId === dto.userId) {
+    if (byKey) {
+      if (byKey.userId === userId) {
         return byKey;
       }
       throw PartnerDomainException.linkAlreadyExists();
     }
 
-    const activeForUser = await this.linkRepository.findOne({
+    const byUser = await this.linkRepository.findOne({
+      where: { partnerId, userId, status: UserPartnerLinkStatus.ACTIVE },
+    });
+    if (byUser) {
+      throw PartnerDomainException.userAlreadyLinkedOtherKey();
+    }
+    return null;
+  }
+
+  /**
+   * 연결 해제. 행은 UNLINKED로 남겨 전환·정산 이력을 보존한다.
+   * 이미 시작된 전환은 시작 시점의 연결로 끝까지 처리되고, 이후 신규 전환만 막힌다.
+   */
+  async unlinkUser(
+    partnerId: string,
+    linkId: string,
+  ): Promise<UserPartnerLinkEntity> {
+    const link = await this.linkRepository.findOne({
+      where: { id: linkId, partnerId },
+    });
+    if (!link) {
+      throw PartnerDomainException.linkNotFound();
+    }
+    return this.markUnlinked(link);
+  }
+
+  /**
+   * Partner API — 업체 회원 키의 연결 상태 조회 (SoT).
+   * ACTIVE만 연결됨으로 본다. 없거나 UNLINKED면 NONE.
+   */
+  async getLinkByPartnerUserKey(
+    partnerId: string,
+    partnerUserKey: string,
+  ): Promise<{
+    status: 'ACTIVE' | 'NONE';
+    linkId: string | null;
+    partnerUserKey: string;
+    linkedAt: string | null;
+  }> {
+    const key = partnerUserKey.trim();
+    const link = await this.linkRepository.findOne({
       where: {
         partnerId,
-        userId: dto.userId,
+        partnerUserKey: key,
         status: UserPartnerLinkStatus.ACTIVE,
       },
     });
-    if (activeForUser) {
-      return activeForUser;
-    }
-
-    return this.linkRepository.save(
-      this.linkRepository.create({
-        partnerId,
-        userId: dto.userId,
+    if (!link) {
+      return {
+        status: 'NONE',
+        linkId: null,
         partnerUserKey: key,
-        status: UserPartnerLinkStatus.ACTIVE,
-        linkedAt: new Date(),
-      }),
-    );
+        linkedAt: null,
+      };
+    }
+    return {
+      status: 'ACTIVE',
+      linkId: link.id,
+      partnerUserKey: link.partnerUserKey,
+      linkedAt: link.linkedAt.toISOString(),
+    };
+  }
+
+  /** B2 — 내 ACTIVE 업체 연결 목록 */
+  async listLinksForUser(userId: string): Promise<MePartnerLinkItemDto[]> {
+    const links = await this.linkRepository.find({
+      where: { userId, status: UserPartnerLinkStatus.ACTIVE },
+      relations: { partner: true },
+      order: { linkedAt: 'DESC' },
+    });
+    return links.map((link) => ({
+      linkId: link.id,
+      partnerId: link.partnerId,
+      partnerName: link.partner?.name ?? '',
+      partnerCode: link.partner?.code ?? '',
+      partnerUserKeyMasked: maskPartnerUserKey(link.partnerUserKey),
+      status: link.status,
+      linkedAt: link.linkedAt.toISOString(),
+    }));
+  }
+
+  /** B2 — 본인 소유 연결만 해제 */
+  async unlinkForUser(
+    userId: string,
+    linkId: string,
+  ): Promise<MePartnerLinkItemDto> {
+    const link = await this.linkRepository.findOne({
+      where: { id: linkId, userId },
+      relations: { partner: true },
+    });
+    if (!link) {
+      throw PartnerDomainException.linkNotFound();
+    }
+    const saved = await this.markUnlinked(link);
+    return {
+      linkId: saved.id,
+      partnerId: saved.partnerId,
+      partnerName: link.partner?.name ?? '',
+      partnerCode: link.partner?.code ?? '',
+      partnerUserKeyMasked: maskPartnerUserKey(saved.partnerUserKey),
+      status: saved.status,
+      linkedAt: saved.linkedAt.toISOString(),
+    };
+  }
+
+  private async markUnlinked(
+    link: UserPartnerLinkEntity,
+  ): Promise<UserPartnerLinkEntity> {
+    if (link.status === UserPartnerLinkStatus.UNLINKED) {
+      return link;
+    }
+    link.status = UserPartnerLinkStatus.UNLINKED;
+    link.unlinkedAt = new Date();
+    return this.linkRepository.save(link);
   }
 
   /**
@@ -163,18 +312,6 @@ export class PartnerExchangeService {
     const { partnerId, partnerClientId, dto, exchangeType } = params;
     await this.requireActivePartner(partnerId);
 
-    const existing = await this.exchangeRepository.findOne({
-      where: { partnerId, idempotencyKey: dto.idempotencyKey },
-    });
-    if (existing) {
-      return this.mapIdempotentExchange(
-        existing,
-        partnerId,
-        exchangeType,
-        dto,
-      );
-    }
-
     const link = await this.linkRepository.findOne({
       where: {
         partnerId,
@@ -184,6 +321,24 @@ export class PartnerExchangeService {
     });
     if (!link) {
       throw PartnerDomainException.linkNotFound();
+    }
+
+    const user = await this.userService.findById(link.userId);
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw PartnerDomainException.userNotActiveForExchange();
+    }
+
+    const existing = await this.exchangeRepository.findOne({
+      where: { partnerId, idempotencyKey: dto.idempotencyKey },
+    });
+    if (existing) {
+      return this.mapIdempotentExchange(
+        existing,
+        partnerId,
+        exchangeType,
+        dto,
+        link,
+      );
     }
 
     const asset = await this.resolveAsset(partnerId, dto.assetCode);
@@ -197,7 +352,13 @@ export class PartnerExchangeService {
           lock: { mode: 'pessimistic_write' },
         });
         if (dup) {
-          return this.mapIdempotentExchange(dup, partnerId, exchangeType, dto);
+          return this.mapIdempotentExchange(
+            dup,
+            partnerId,
+            exchangeType,
+            dto,
+            link,
+          );
         }
 
         const now = new Date();
@@ -311,6 +472,7 @@ export class PartnerExchangeService {
         partnerId,
         exchangeType,
         dto,
+        link,
       );
     }
   }
@@ -366,11 +528,14 @@ export class PartnerExchangeService {
     partnerId: string,
     exchangeType: PartnerExchangeType,
     dto: PartnerExchangeRequestDto,
+    link: UserPartnerLinkEntity,
   ): PartnerExchangeResponseDto {
     if (
       existing.partnerId !== partnerId ||
       existing.exchangeType !== exchangeType ||
-      existing.amount !== dto.amount
+      existing.amount !== dto.amount ||
+      existing.userId !== link.userId ||
+      existing.userPartnerLinkId !== link.id
     ) {
       throw PartnerDomainException.exchangeIdempotencyConflict();
     }

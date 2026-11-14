@@ -46,6 +46,7 @@ describe('PartnerExchangeService flow', () => {
   let partnerCoinService: jest.Mocked<
     Pick<PartnerCoinService, 'creditAvailable' | 'debitAvailable'>
   >;
+  let userService: { findById: jest.Mock };
 
   let partners: Map<string, PartnerEntity>;
   let assets: Map<string, PartnerAssetEntity>;
@@ -72,12 +73,15 @@ describe('PartnerExchangeService flow', () => {
       createdAt: new Date(),
     } as PartnerAssetEntity);
 
+    const partner = partners.get(partnerId)!;
     links.set(linkId, {
       id: linkId,
       partnerId,
       userId,
       partnerUserKey: 'A-123',
       status: UserPartnerLinkStatus.ACTIVE,
+      linkedAt: new Date('2024-01-01T00:00:00.000Z'),
+      partner,
     } as UserPartnerLinkEntity);
 
     feePolicy = {
@@ -120,6 +124,7 @@ describe('PartnerExchangeService flow', () => {
         where?: Record<string, unknown>;
         order?: unknown;
         lock?: unknown;
+        relations?: unknown;
       }) => {
         const where = options.where ?? {};
         const values = Array.isArray(store)
@@ -131,6 +136,21 @@ describe('PartnerExchangeService flow', () => {
               ([k, v]) => (row as Record<string, unknown>)[k] === v,
             ),
           ) ?? null
+        );
+      },
+      find: async (options: {
+        where?: Record<string, unknown>;
+        order?: unknown;
+        relations?: unknown;
+      }) => {
+        const where = options.where ?? {};
+        const values = Array.isArray(store)
+          ? store
+          : Array.from(store.values());
+        return values.filter((row) =>
+          Object.entries(where).every(
+            ([k, v]) => (row as Record<string, unknown>)[k] === v,
+          ),
         );
       },
     };
@@ -199,13 +219,13 @@ describe('PartnerExchangeService flow', () => {
         },
         {
           provide: UserService,
-          useValue: {
+          useValue: (userService = {
             findById: jest.fn().mockResolvedValue({
               id: userId,
               status: UserStatus.ACTIVE,
               loginId: 'user1',
             }),
-          },
+          }),
         },
         { provide: DataSource, useValue: dataSource },
         {
@@ -359,6 +379,185 @@ describe('PartnerExchangeService flow', () => {
       }),
     ).rejects.toMatchObject({
       response: { code: 'PARTNER_EXCHANGE_IDEMPOTENCY_CONFLICT' },
+    });
+  });
+
+  it('ACTIVE가 아닌 사용자는 CHARGE를 거절한다', async () => {
+    userService.findById.mockResolvedValueOnce({
+      id: userId,
+      status: UserStatus.SUSPENDED,
+      loginId: 'user1',
+    });
+
+    await expect(
+      service.charge(partnerId, clientId, {
+        idempotencyKey: 'idem-inactive',
+        partnerUserKey: 'A-123',
+        amount: '10000',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'PARTNER_EXCHANGE_USER_NOT_ACTIVE' },
+    });
+    expect(coinService.debitNonSellable).not.toHaveBeenCalled();
+  });
+
+  it('동일 idempotencyKey에 다른 회원 키면 conflict', async () => {
+    await service.charge(partnerId, clientId, {
+      idempotencyKey: 'idem-other-key',
+      partnerUserKey: 'A-123',
+      amount: '10000',
+    });
+
+    links.set('link-2', {
+      id: 'link-2',
+      partnerId,
+      userId: 'user-2',
+      partnerUserKey: 'B-456',
+      status: UserPartnerLinkStatus.ACTIVE,
+    } as UserPartnerLinkEntity);
+
+    userService.findById.mockResolvedValue({
+      id: 'user-2',
+      status: UserStatus.ACTIVE,
+      loginId: 'user2',
+    });
+
+    await expect(
+      service.charge(partnerId, clientId, {
+        idempotencyKey: 'idem-other-key',
+        partnerUserKey: 'B-456',
+        amount: '10000',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'PARTNER_EXCHANGE_IDEMPOTENCY_CONFLICT' },
+    });
+  });
+
+  describe('POL-LINK-001 업체별 1:1 연결', () => {
+    it('같은 사용자·같은 회원 키는 기존 연결을 그대로 반환한다', async () => {
+      const link = await service.linkUser(partnerId, {
+        userId,
+        partnerUserKey: ' A-123 ',
+      });
+      expect(link.id).toBe(linkId);
+      expect(links.size).toBe(1);
+    });
+
+    it('같은 업체의 다른 회원 키로 연결하면 거절한다', async () => {
+      await expect(
+        service.linkUser(partnerId, { userId, partnerUserKey: 'A-999' }),
+      ).rejects.toMatchObject({
+        response: { code: 'PARTNER_USER_ALREADY_LINKED' },
+      });
+      expect(links.size).toBe(1);
+    });
+
+    it('다른 BRIT 사용자에게 연결된 회원 키는 거절한다', async () => {
+      await expect(
+        service.linkUser(partnerId, {
+          userId: 'user-2',
+          partnerUserKey: 'A-123',
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'PARTNER_USER_LINK_ALREADY_EXISTS' },
+      });
+    });
+
+    it('다른 업체와는 추가로 연결할 수 있다', async () => {
+      partners.set('partner-2', {
+        id: 'partner-2',
+        code: 'SHOP_B',
+        name: '비샵',
+        status: PartnerStatus.ACTIVE,
+      } as PartnerEntity);
+
+      const link = await service.linkUser('partner-2', {
+        userId,
+        partnerUserKey: 'A-123',
+      });
+      expect(link.partnerId).toBe('partner-2');
+      expect(links.size).toBe(2);
+    });
+
+    it('해제 후 다른 회원 키로 신규 연결하고, 기존 행은 UNLINKED로 남는다', async () => {
+      await service.charge(partnerId, clientId, {
+        idempotencyKey: 'idem-before-unlink',
+        partnerUserKey: 'A-123',
+        amount: '10000',
+      });
+
+      const unlinked = await service.unlinkUser(partnerId, linkId);
+      expect(unlinked.status).toBe(UserPartnerLinkStatus.UNLINKED);
+      expect(unlinked.unlinkedAt).toBeInstanceOf(Date);
+
+      await expect(
+        service.charge(partnerId, clientId, {
+          idempotencyKey: 'idem-after-unlink',
+          partnerUserKey: 'A-123',
+          amount: '10000',
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'PARTNER_USER_LINK_NOT_FOUND' },
+      });
+
+      const relinked = await service.linkUser(partnerId, {
+        userId,
+        partnerUserKey: 'A-999',
+      });
+      expect(relinked.id).not.toBe(linkId);
+      expect(links.get(linkId)?.status).toBe(UserPartnerLinkStatus.UNLINKED);
+
+      const history = Array.from(exchanges.values());
+      expect(history).toHaveLength(1);
+      expect(history[0].userPartnerLinkId).toBe(linkId);
+    });
+
+    it('이미 해제된 연결을 다시 해제해도 그대로 반환한다', async () => {
+      await service.unlinkUser(partnerId, linkId);
+      const again = await service.unlinkUser(partnerId, linkId);
+      expect(again.status).toBe(UserPartnerLinkStatus.UNLINKED);
+    });
+
+    it('B2: 내 ACTIVE 연결을 목록으로 보고 본인 연결만 해제한다', async () => {
+      const listed = await service.listLinksForUser(userId);
+      expect(listed).toEqual([
+        expect.objectContaining({
+          linkId,
+          partnerName: '에이샵',
+          partnerCode: 'SHOP_A',
+          partnerUserKeyMasked: 'A-**3',
+          status: UserPartnerLinkStatus.ACTIVE,
+        }),
+      ]);
+
+      await expect(
+        service.unlinkForUser('user-other', linkId),
+      ).rejects.toMatchObject({
+        response: { code: 'PARTNER_USER_LINK_NOT_FOUND' },
+      });
+
+      const revoked = await service.unlinkForUser(userId, linkId);
+      expect(revoked.status).toBe(UserPartnerLinkStatus.UNLINKED);
+      expect(await service.listLinksForUser(userId)).toEqual([]);
+    });
+
+    it('Partner: partnerUserKey로 ACTIVE|NONE 연결 상태를 조회한다', async () => {
+      const active = await service.getLinkByPartnerUserKey(partnerId, 'A-123');
+      expect(active).toEqual({
+        status: 'ACTIVE',
+        linkId,
+        partnerUserKey: 'A-123',
+        linkedAt: expect.any(String),
+      });
+
+      await service.unlinkForUser(userId, linkId);
+      const none = await service.getLinkByPartnerUserKey(partnerId, 'A-123');
+      expect(none).toEqual({
+        status: 'NONE',
+        linkId: null,
+        partnerUserKey: 'A-123',
+        linkedAt: null,
+      });
     });
   });
 });
