@@ -42,11 +42,13 @@ import { SearchAdminPartnersDto } from './dto/search-admin-partners.dto';
 import { UpdatePartnerClientDto } from './dto/update-partner-client.dto';
 import { UpdatePartnerDto } from './dto/update-partner.dto';
 import { UpdatePartnerMemberDto } from './dto/update-partner-member.dto';
+import { UpdatePartnerCreditLimitDto } from './dto/partner-wallet.dto';
 import { PartnerClientsService } from './partner-clients.service';
 import { PartnerExchangeService } from './partner-exchange.service';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 import { PartnerMembersService } from './partner-members.service';
 import { PartnerPortalService } from './partner-portal.service';
+import { PartnerWalletsService } from './partner-wallets.service';
 import { PartnersService } from './partners.service';
 
 @ApiTags('admin-partners')
@@ -62,6 +64,7 @@ export class AdminPartnersController {
     private readonly partnerFeePoliciesService: PartnerFeePoliciesService,
     private readonly partnerExchangeService: PartnerExchangeService,
     private readonly partnerPortalService: PartnerPortalService,
+    private readonly partnerWalletsService: PartnerWalletsService,
   ) {}
 
   @Get()
@@ -97,6 +100,30 @@ export class AdminPartnersController {
   })
   getDashboard(@Param('partnerId', ParseUUIDPipe) partnerId: string) {
     return this.partnerPortalService.getDashboard(partnerId);
+  }
+
+  @Get(':partnerId/wallet')
+  @ApiOperation({ summary: '업체 Coin 잔액·마이너스 한도' })
+  getWallet(@Param('partnerId', ParseUUIDPipe) partnerId: string) {
+    return this.partnerWalletsService.getWallet(partnerId);
+  }
+
+  @Patch(':partnerId/wallet/credit-limit')
+  @ApiOperation({
+    summary: '업체 마이너스 한도 변경 (REDEEM 후 잔액 >= -creditLimit)',
+  })
+  updateCreditLimit(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Body() body: UpdatePartnerCreditLimitDto,
+    @Req() req: Request,
+  ) {
+    return this.partnerWalletsService.updateCreditLimit(
+      user.userId,
+      partnerId,
+      body,
+      resolveClientIp(req),
+    );
   }
 
   @Patch(':partnerId')
@@ -261,6 +288,16 @@ export class AdminPartnersController {
     @Body() body: CreateUserPartnerLinkDto,
   ) {
     return this.partnerExchangeService.linkUser(partnerId, body);
+  }
+
+  @Post(':partnerId/user-links/:linkId/unlink')
+  @HttpCode(200)
+  @ApiOperation({ summary: '최종 사용자 ↔ 업체 연결 해제 (이력 보존)' })
+  unlinkUserLink(
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('linkId', ParseUUIDPipe) linkId: string,
+  ) {
+    return this.partnerExchangeService.unlinkUser(partnerId, linkId);
   }
 
   @Get(':partnerId/fee-policies')

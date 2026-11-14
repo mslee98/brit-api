@@ -44,6 +44,27 @@ export class PartnerPortalMeResponseDto {
   }
 }
 
+/** 동기 CHARGE/REDEEM 전에 Admin·포털이 미리 보는 준비 상태 */
+export class PartnerDashboardSetupDto {
+  @ApiProperty({ description: '활성 업체 자산 1개 이상' })
+  assetReady!: boolean;
+
+  @ApiProperty({ description: '현재 적용 가능한 활성 수수료 정책 1개 이상' })
+  feePolicyReady!: boolean;
+
+  @ApiProperty({ example: '0' })
+  availableBalance!: string;
+
+  @ApiProperty({ example: '0' })
+  creditLimit!: string;
+
+  @ApiProperty({
+    example: '0',
+    description: '추가로 REDEEM 가능한 금액 (available + creditLimit)',
+  })
+  remainingCredit!: string;
+}
+
 export class PartnerPortalDashboardResponseDto {
   @ApiProperty()
   partnerId!: string;
@@ -86,6 +107,9 @@ export class PartnerPortalDashboardResponseDto {
 
   @ApiPropertyOptional({ nullable: true })
   activeFeeRateBps!: number | null;
+
+  @ApiProperty({ type: PartnerDashboardSetupDto })
+  setup!: PartnerDashboardSetupDto;
 }
 
 export class PartnerExchangeResponseDto {

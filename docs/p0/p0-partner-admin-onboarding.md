@@ -23,7 +23,7 @@
 | C | 소속 수 | 사용자당 **ACTIVE 소속 업체 1개**. 이미 소속이면 추가 금지 → **변경(재배정)**만 |
 | C | 역할 | `OWNER` / `MANAGER` |
 | D | 1차 연결 | `partner_members`만. `user_partner_links`는 이번 범위 밖 |
-| E | Client | Admin 발급·회전·폐기·scopes/origins (`partner_clients` 등) |
+| E | Client | Admin: 전체 발급·회전·폐기·scopes/origins. 포털(OWNER): **Sandbox만** 발급·비밀키 재발급·이름/Origin 수정 |
 | F | 관리자 권한 | `ADMIN` · `SYS_ADMIN` 모두 읽기·쓰기 |
 | — | 업체 연락처 | 담당자 이름·전화·이메일·텔레그램 (+ memo). 사업자등록번호 없음 |
 
@@ -34,7 +34,8 @@
 → BRIT 관리자: POST /admin/partners (ACTIVE)
 → 업체 담당자: 일반 회원가입 → 승인(ACTIVE)
 → BRIT 관리자: 사용자 검색 후 partner_members 연결
-→ (이후) Client 발급 · SDK · CHARGE
+→ 업체 OWNER: brit-partner 「연동」에서 Sandbox Client 발급
+→ (이후) SDK · CHARGE · Production Client는 Admin 발급
 ```
 
 ### 업체 포털 (`brit-partner`)
@@ -48,13 +49,30 @@
 | GET | `/v1/partner/fee-policies` | 산정 근거(정책) |
 | GET | `/v1/partner/fee-accruals` | 수수료 발생 내역 |
 | GET | `/v1/partner/exchanges` | CHARGE/REDEEM 내역 |
+| GET | `/v1/partner/clients` | 내 업체 연동 키(Client) 목록 — 전 역할 |
+| POST | `/v1/partner/clients` | Sandbox Client 발급 — OWNER. SERVER면 비밀키 원문 1회 |
+| PATCH | `/v1/partner/clients/:id` | Sandbox 이름·Origin 수정 — OWNER |
+| POST | `/v1/partner/clients/:id/rotate-secret` | Sandbox SERVER 비밀키 재발급 — OWNER |
+
+포털 Client 규칙 (`PartnerClientsService.*Portal*`):
+
+- 쓰기는 `OWNER` + 업체 `ACTIVE`만 (`PARTNER_PORTAL_OWNER_REQUIRED`, `PARTNER_PORTAL_NOT_ACTIVE`)
+- 환경은 항상 `SANDBOX`. Production 대상 수정·재발급은 `PARTNER_PORTAL_CLIENT_SANDBOX_ONLY`
+- scope 허용 목록: `EXCHANGE_CHARGE`, `EXCHANGE_REDEEM`, `STATUS_READ` (`PARTNER_PORTAL_CLIENT_SCOPE_NOT_ALLOWED`)
+- 활성 Sandbox Client 업체당 최대 5개 (`PARTNER_PORTAL_CLIENT_LIMIT_EXCEEDED`)
+- 폐기(revoke)·webhook·scope 변경은 Admin 전용
+- 감사 로그 actor는 담당자 `userId`, reason은 고정 문구
 
 Admin 수수료: `GET|POST /v1/admin/partners/:id/fee-policies`, `POST .../deactivate`.  
-Admin 준비: `POST .../assets`, `POST .../user-links`.  
+Admin 준비: `POST .../assets`, `POST .../user-links`, 해제 `POST .../user-links/:linkId/unlink`.  
+사용자 연결은 POL-LINK-001(업체별 1:1, 해제 이력 보존): 같은 업체 다른 키 → `PARTNER_USER_ALREADY_LINKED`, 타 사용자 키 → `PARTNER_USER_LINK_ALREADY_EXISTS`. 정책 SoT `brit-front/docs/domains/merchant.md` §5.1.  
 CHARGE/REDEEM: `POST /v1/partner/exchanges/charge|redeem` (Client Secret + scope, 업체 ACTIVE).  
 멱등: `(partner_id, idempotency_key)` unique (업체 스코프). Sandbox 동기 경로는 중간 상태 row를 여러 번 저장하지 않고 COMPLETED로 확정.  
 포털: SUSPENDED 조회 허용 / TERMINATED 차단. 수수료 표시는 전환과 동일 선택 규칙(exact→ALL).  
 스키마: links/assets/exchanges/fees + `partner_coin_wallets` / `partner_coin_ledger_entries`.
+
+**연동 샘플:** `brit-sample-shop/` — 가짜 업체(웹+서버)가 동기 CHARGE를 호출한다.  
+Secret은 샘플 **서버**에만 둔다. SDK·Embed·사용자 PIN은 2단계(`merchant.md` §18.1).
 
 ---
 

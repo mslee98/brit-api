@@ -13,12 +13,17 @@ import { PartnerClientSecretStatus } from './domain/enums/partner-client-secret-
 import { PartnerClientSecretType } from './domain/enums/partner-client-secret-type.enum';
 import { PartnerClientStatus } from './domain/enums/partner-client-status.enum';
 import { PartnerClientType } from './domain/enums/partner-client-type.enum';
+import { PartnerMemberRole } from './domain/enums/partner-member-role.enum';
 import { PartnerStatus } from './domain/enums/partner-status.enum';
 import { CreatePartnerClientDto } from './dto/create-partner-client.dto';
 import {
   PartnerClientIssuedResponseDto,
   PartnerClientResponseDto,
 } from './dto/partner-client-response.dto';
+import {
+  CreatePortalPartnerClientDto,
+  UpdatePortalPartnerClientDto,
+} from './dto/portal-partner-client.dto';
 import { UpdatePartnerClientDto } from './dto/update-partner-client.dto';
 import { PartnerDomainException } from './exceptions/partner.exceptions';
 import { PartnerClientOriginEntity } from './infrastructure/entities/partner-client-origin.entity';
@@ -26,6 +31,27 @@ import { PartnerClientScopeEntity } from './infrastructure/entities/partner-clie
 import { PartnerClientSecretEntity } from './infrastructure/entities/partner-client-secret.entity';
 import { PartnerClientEntity } from './infrastructure/entities/partner-client.entity';
 import { PartnerEntity } from './infrastructure/entities/partner.entity';
+
+export const PORTAL_ALLOWED_CLIENT_SCOPES: readonly PartnerClientScopeCode[] = [
+  PartnerClientScopeCode.USER_LINK,
+  PartnerClientScopeCode.EXCHANGE_CHARGE,
+  PartnerClientScopeCode.EXCHANGE_REDEEM,
+  PartnerClientScopeCode.STATUS_READ,
+];
+
+export const PORTAL_SANDBOX_CLIENT_LIMIT = 5;
+
+const PORTAL_AUDIT_REASON = {
+  create: '업체 포털 Sandbox 연동 키 발급',
+  update: '업체 포털 Sandbox 연동 키 수정',
+  rotate: '업체 포털 Sandbox 비밀키 재발급',
+} as const;
+
+export type PartnerPortalActor = {
+  userId: string;
+  partnerId: string;
+  memberRole: PartnerMemberRole;
+};
 
 @Injectable()
 export class PartnerClientsService {
@@ -410,6 +436,107 @@ export class PartnerClientsService {
         ipAddress,
       });
     });
+  }
+
+  async createPortalClient(
+    actor: PartnerPortalActor,
+    dto: CreatePortalPartnerClientDto,
+    ipAddress: string | null,
+  ): Promise<PartnerClientIssuedResponseDto> {
+    await this.requirePortalManager(actor);
+    const disallowed = dto.scopes.find(
+      (scope) => !PORTAL_ALLOWED_CLIENT_SCOPES.includes(scope),
+    );
+    if (disallowed) {
+      throw PartnerDomainException.portalClientScopeNotAllowed(disallowed);
+    }
+
+    const activeSandboxCount = await this.clientRepository.count({
+      where: {
+        partnerId: actor.partnerId,
+        environment: PartnerClientEnvironment.SANDBOX,
+        status: PartnerClientStatus.ACTIVE,
+      },
+    });
+    if (activeSandboxCount >= PORTAL_SANDBOX_CLIENT_LIMIT) {
+      throw PartnerDomainException.portalClientLimitExceeded(
+        PORTAL_SANDBOX_CLIENT_LIMIT,
+      );
+    }
+
+    return this.createClient(
+      actor.userId,
+      actor.partnerId,
+      {
+        environment: PartnerClientEnvironment.SANDBOX,
+        clientType: dto.clientType,
+        name: dto.name,
+        webhookUrl: null,
+        scopes: dto.scopes,
+        origins: dto.origins,
+        reason: PORTAL_AUDIT_REASON.create,
+      },
+      ipAddress,
+    );
+  }
+
+  async updatePortalClient(
+    actor: PartnerPortalActor,
+    partnerClientId: string,
+    dto: UpdatePortalPartnerClientDto,
+    ipAddress: string | null,
+  ): Promise<PartnerClientResponseDto> {
+    await this.requirePortalManager(actor);
+    await this.requirePortalSandboxClient(actor.partnerId, partnerClientId);
+    return this.updateClient(
+      actor.userId,
+      actor.partnerId,
+      partnerClientId,
+      {
+        name: dto.name,
+        origins: dto.origins,
+        reason: PORTAL_AUDIT_REASON.update,
+      },
+      ipAddress,
+    );
+  }
+
+  async rotatePortalClientSecret(
+    actor: PartnerPortalActor,
+    partnerClientId: string,
+    ipAddress: string | null,
+  ): Promise<PartnerClientIssuedResponseDto> {
+    await this.requirePortalManager(actor);
+    await this.requirePortalSandboxClient(actor.partnerId, partnerClientId);
+    return this.rotateApiSecret(
+      actor.userId,
+      actor.partnerId,
+      partnerClientId,
+      PORTAL_AUDIT_REASON.rotate,
+      ipAddress,
+    );
+  }
+
+  /** 포털 쓰기: OWNER + ACTIVE 업체만. SUSPENDED는 조회만 허용한다. */
+  private async requirePortalManager(actor: PartnerPortalActor): Promise<void> {
+    if (actor.memberRole !== PartnerMemberRole.OWNER) {
+      throw PartnerDomainException.portalOwnerRequired();
+    }
+    const partner = await this.requirePartner(actor.partnerId);
+    if (partner.status !== PartnerStatus.ACTIVE) {
+      throw PartnerDomainException.portalPartnerNotActive();
+    }
+  }
+
+  private async requirePortalSandboxClient(
+    partnerId: string,
+    partnerClientId: string,
+  ): Promise<PartnerClientEntity> {
+    const client = await this.requireClient(partnerId, partnerClientId);
+    if (client.environment !== PartnerClientEnvironment.SANDBOX) {
+      throw PartnerDomainException.portalClientSandboxOnly();
+    }
+    return client;
   }
 
   private async requirePartner(partnerId: string): Promise<PartnerEntity> {

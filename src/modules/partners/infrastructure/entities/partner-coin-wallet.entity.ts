@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -13,9 +14,10 @@ import { PartnerCoinWalletStatus } from '../../domain/enums/partner-coin-wallet-
 import { PartnerEntity } from './partner.entity';
 
 /**
- * partner_coin_wallets — 업체 MS 잔액 (음수 available 허용).
+ * partner_coin_wallets — 업체 MS 잔액. available은 -credit_limit까지 음수 허용.
  */
 @Entity({ name: 'partner_coin_wallets' })
+@Check('ck_partner_coin_wallets_credit_limit', '"credit_limit" >= 0')
 export class PartnerCoinWalletEntity {
   @PrimaryColumn({ type: 'uuid', name: 'partner_id' })
   partnerId!: string;
@@ -29,6 +31,10 @@ export class PartnerCoinWalletEntity {
 
   @Column({ type: 'bigint', name: 'locked_balance', default: 0 })
   lockedBalance!: string;
+
+  /** 업체별 마이너스 한도. 0이면 음수 잔액이 되는 REDEEM을 거절한다. */
+  @Column({ type: 'bigint', name: 'credit_limit', default: 0 })
+  creditLimit!: string;
 
   @Column({
     type: 'varchar',

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import {
   buildPaginationMeta,
@@ -11,6 +11,7 @@ import { PartnerExchangeType } from './domain/enums/partner-exchange-type.enum';
 import { PartnerFeeAccrualStatus } from './domain/enums/partner-fee-accrual-status.enum';
 import { PartnerMemberRole } from './domain/enums/partner-member-role.enum';
 import {
+  PartnerDashboardSetupDto,
   PartnerExchangeResponseDto,
   PartnerFeeAccrualResponseDto,
   PartnerPortalDashboardResponseDto,
@@ -20,10 +21,12 @@ import { PartnerFeePolicyResponseDto } from './dto/partner-fee-policy-response.d
 import { SearchPartnerExchangesDto } from './dto/search-partner-exchanges.dto';
 import { SearchPartnerFeeAccrualsDto } from './dto/search-partner-fee-accruals.dto';
 import { PartnerDomainException } from './exceptions/partner.exceptions';
+import { PartnerAssetEntity } from './infrastructure/entities/partner-asset.entity';
 import { PartnerExchangeEntity } from './infrastructure/entities/partner-exchange.entity';
 import { PartnerFeeAccrualEntity } from './infrastructure/entities/partner-fee-accrual.entity';
 import { PartnerFeePolicyEntity } from './infrastructure/entities/partner-fee-policy.entity';
 import { PartnerEntity } from './infrastructure/entities/partner.entity';
+import { PartnerCoinService } from './partner-coin.service';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 
 @Injectable()
@@ -37,7 +40,11 @@ export class PartnerPortalService {
     private readonly accrualRepository: Repository<PartnerFeeAccrualEntity>,
     @InjectRepository(PartnerFeePolicyEntity)
     private readonly feePolicyRepository: Repository<PartnerFeePolicyEntity>,
+    @InjectRepository(PartnerAssetEntity)
+    private readonly assetRepository: Repository<PartnerAssetEntity>,
     private readonly partnerFeePoliciesService: PartnerFeePoliciesService,
+    private readonly partnerCoinService: PartnerCoinService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async getMe(
@@ -62,6 +69,8 @@ export class PartnerPortalService {
       todayCharge,
       todayRedeem,
       activePolicy,
+      activeAssetCount,
+      wallet,
     ] = await Promise.all([
       this.sumFees(partnerId, {
         statuses: [
@@ -93,7 +102,21 @@ export class PartnerPortalService {
         end,
       ),
       this.findActiveFeePolicy(partnerId),
+      this.assetRepository.count({
+        where: { partnerId, isActive: true },
+      }),
+      this.partnerCoinService.getWalletSummary(
+        this.dataSource.manager,
+        partnerId,
+      ),
     ]);
+
+    const setup = new PartnerDashboardSetupDto();
+    setup.assetReady = activeAssetCount > 0;
+    setup.feePolicyReady = Boolean(activePolicy);
+    setup.availableBalance = wallet.availableBalance;
+    setup.creditLimit = wallet.creditLimit;
+    setup.remainingCredit = wallet.remainingCredit;
 
     const dto = new PartnerPortalDashboardResponseDto();
     dto.partnerId = partner.id;
@@ -109,6 +132,7 @@ export class PartnerPortalService {
     dto.todayRedeemAmount = todayRedeem.amount;
     dto.activeFeePolicyId = activePolicy?.id ?? null;
     dto.activeFeeRateBps = activePolicy?.feeRateBps ?? null;
+    dto.setup = setup;
     return dto;
   }
 

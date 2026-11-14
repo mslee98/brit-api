@@ -20,15 +20,57 @@ type PartnerCoinMutationParams = {
   sequenceNo?: number;
 };
 
+export type PartnerWalletSummary = {
+  availableBalance: string;
+  lockedBalance: string;
+  creditLimit: string;
+  remainingCredit: string;
+};
+
 /**
  * 업체 Coin Wallet/Ledger.
- * available_balance 음수 허용 (REDEEM).
+ * available_balance는 REDEEM으로 -credit_limit까지 음수 허용.
  */
 @Injectable()
 export class PartnerCoinService {
+  async getWalletSummary(
+    manager: EntityManager,
+    partnerId: string,
+  ): Promise<PartnerWalletSummary> {
+    const wallet = await manager
+      .getRepository(PartnerCoinWalletEntity)
+      .findOne({ where: { partnerId } });
+    return this.toSummary(
+      wallet?.availableBalance ?? '0',
+      wallet?.lockedBalance ?? '0',
+      wallet?.creditLimit ?? '0',
+    );
+  }
+
+  async updateCreditLimit(
+    manager: EntityManager,
+    partnerId: string,
+    creditLimit: string,
+  ): Promise<PartnerWalletSummary> {
+    if (!/^(0|[1-9]\d*)$/.test(creditLimit)) {
+      throw PartnerDomainException.invalidCreditLimit();
+    }
+    const wallet = await this.ensureWallet(manager, partnerId, {
+      allowSuspended: true,
+    });
+    wallet.creditLimit = creditLimit;
+    await manager.getRepository(PartnerCoinWalletEntity).save(wallet);
+    return this.toSummary(
+      wallet.availableBalance,
+      wallet.lockedBalance,
+      wallet.creditLimit,
+    );
+  }
+
   async ensureWallet(
     manager: EntityManager,
     partnerId: string,
+    options: { allowSuspended?: boolean } = {},
   ): Promise<PartnerCoinWalletEntity> {
     const repo = manager.getRepository(PartnerCoinWalletEntity);
     let wallet = await repo.findOne({
@@ -41,6 +83,7 @@ export class PartnerCoinService {
           partnerId,
           availableBalance: '0',
           lockedBalance: '0',
+          creditLimit: '0',
           status: PartnerCoinWalletStatus.ACTIVE,
         }),
       );
@@ -49,7 +92,10 @@ export class PartnerCoinService {
         lock: { mode: 'pessimistic_write' },
       });
     }
-    if (wallet.status !== PartnerCoinWalletStatus.ACTIVE) {
+    if (
+      !options.allowSuspended &&
+      wallet.status !== PartnerCoinWalletStatus.ACTIVE
+    ) {
       throw PartnerDomainException.partnerWalletSuspended();
     }
     return wallet;
@@ -71,14 +117,18 @@ export class PartnerCoinService {
     });
   }
 
-  /** REDEEM 완료: 업체 available -amount (음수 허용) */
+  /** REDEEM 완료: 업체 available -amount (-credit_limit 아래로는 거절) */
   async debitAvailable(
     manager: EntityManager,
     params: PartnerCoinMutationParams,
   ): Promise<void> {
     this.assertPositive(params.amount);
     const wallet = await this.ensureWallet(manager, params.partnerId);
-    wallet.availableBalance = subAmount(wallet.availableBalance, params.amount);
+    const nextBalance = subAmount(wallet.availableBalance, params.amount);
+    if (BigInt(nextBalance) < -BigInt(wallet.creditLimit ?? '0')) {
+      throw PartnerDomainException.creditLimitExceeded();
+    }
+    wallet.availableBalance = nextBalance;
     await manager.getRepository(PartnerCoinWalletEntity).save(wallet);
     await this.insertLedger(manager, {
       ...params,
@@ -108,6 +158,19 @@ export class PartnerCoinService {
         description: params.description ?? null,
       }),
     );
+  }
+
+  private toSummary(
+    availableBalance: string,
+    lockedBalance: string,
+    creditLimit: string,
+  ): PartnerWalletSummary {
+    return {
+      availableBalance,
+      lockedBalance,
+      creditLimit,
+      remainingCredit: addAmount(availableBalance, creditLimit),
+    };
   }
 
   private assertPositive(amount: string): void {
