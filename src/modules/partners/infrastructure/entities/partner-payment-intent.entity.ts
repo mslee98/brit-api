@@ -16,8 +16,8 @@ import { PartnerExchangeEntity } from './partner-exchange.entity';
 import { PartnerEntity } from './partner.entity';
 
 /**
- * partner_payment_intents — 업체 CHARGE 일회성 Intent (B3).
- * 실제 원장은 partner_exchanges. Embed에서 PIN 승인 후 동기 charge.
+ * partner_payment_intents — 업체 CHARGE 일회성 Intent.
+ * 실제 원장은 partner_exchanges. Embed PIN 후 B4-1 잠금(PAYMENT_PROCESSING).
  */
 @Entity({ name: 'partner_payment_intents' })
 @Index('ux_partner_payment_intents_external_order', ['partnerId', 'externalOrderId'], {
@@ -50,16 +50,27 @@ export class PartnerPaymentIntentEntity {
   @Column({ type: 'varchar', length: 255, name: 'partner_user_key' })
   partnerUserKey!: string;
 
-  /** CHARGE 금액 (MS, 양의 정수 문자열) */
-  @Column({ type: 'bigint', name: 'amount' })
-  amount!: string;
+  /**
+   * CHARGE 금액 (MS, 양의 정수 문자열).
+   * create 시 생략 가능 — Embed lock 후 확정 (D26).
+   */
+  @Column({ type: 'bigint', name: 'amount', nullable: true })
+  amount!: string | null;
 
-  /** Intent 생성 시 수수료 스냅샷 (표시·감사). 사용자 MS 차감은 amount */
-  @Column({ type: 'bigint', name: 'fee_amount', default: '0' })
-  feeAmount!: string;
+  /** 수수료 스냅샷 (표시·감사). 사용자 MS 차감은 amount. lock 전 null */
+  @Column({ type: 'bigint', name: 'fee_amount', nullable: true })
+  feeAmount!: string | null;
 
-  @Column({ type: 'bigint', name: 'total_debit', default: '0' })
-  totalDebit!: string;
+  /** 수수료 정책 스냅샷 (B4-3 settle 시 재조회 대신 사용) */
+  @Column({ type: 'uuid', name: 'fee_policy_id', nullable: true })
+  feePolicyId!: string | null;
+
+  @Column({ type: 'bigint', name: 'total_debit', nullable: true })
+  totalDebit!: string | null;
+
+  /** create(amount) 또는 Embed lock 시점. null이면 금액 미확정 */
+  @Column({ type: 'timestamptz', name: 'amount_locked_at', nullable: true })
+  amountLockedAt!: Date | null;
 
   @Column({ type: 'varchar', length: 30, name: 'asset_code', nullable: true })
   assetCode!: string | null;

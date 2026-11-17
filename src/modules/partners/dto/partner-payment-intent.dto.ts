@@ -24,13 +24,15 @@ export class CreatePartnerPaymentIntentDto {
   @Length(1, 255)
   partnerUserKey!: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: '50000',
-    description: 'CHARGE 금액 (MS 최소단위, 양의 정수 문자열)',
+    description:
+      'CHARGE 금액 (MS 최소단위, 양의 정수 문자열). 생략 시 Embed에서 lock (D26). 넣으면 생성 시 즉시 확정(호환)',
   })
+  @IsOptional()
   @IsString()
   @Matches(/^[1-9]\d*$/)
-  amount!: string;
+  amount?: string;
 
   @ApiProperty({
     example: 'http://localhost:5176',
@@ -64,12 +66,22 @@ export class AuthorizePartnerPaymentIntentDto {
   pin!: string;
 }
 
+export class LockPartnerPaymentIntentAmountDto {
+  @ApiProperty({
+    example: '275000',
+    description: 'Embed에서 확정할 CHARGE 금액 (MS, 양의 정수 문자열)',
+  })
+  @IsString()
+  @Matches(/^[1-9]\d*$/)
+  amount!: string;
+}
+
 export class PartnerPaymentIntentCreatedDto {
   intentId!: string;
   payUrl!: string;
-  chargeAmountMs!: string;
-  feeAmountMs!: string;
-  totalDebitMs!: string;
+  chargeAmountMs!: string | null;
+  feeAmountMs!: string | null;
+  totalDebitMs!: string | null;
   status!: PartnerPaymentIntentStatus;
   expiresAt!: string;
   expiresInSec!: number;
@@ -79,9 +91,9 @@ export class PartnerPaymentIntentViewDto {
   intentId!: string;
   externalOrderId!: string;
   partnerUserKey!: string;
-  chargeAmountMs!: string;
-  feeAmountMs!: string;
-  totalDebitMs!: string;
+  chargeAmountMs!: string | null;
+  feeAmountMs!: string | null;
+  totalDebitMs!: string | null;
   assetCode!: string | null;
   status!: PartnerPaymentIntentStatus;
   expiresAt!: string;
@@ -97,11 +109,14 @@ export class EmbedPaymentIntentDto {
   partnerName!: string;
   partnerCode!: string;
   partnerUserKeyMasked!: string;
-  chargeAmountMs!: string;
-  feeAmountMs!: string;
-  totalDebitMs!: string;
+  chargeAmountMs!: string | null;
+  feeAmountMs!: string | null;
+  totalDebitMs!: string | null;
   assetCode!: string | null;
+  /** 충전 가능 잔액 (현행 nonSellable). Embed 라벨: 충전 가능 잔액 */
   nonSellableBalanceMs!: string | null;
+  /** amount 미확정이면 true — Embed 금액 선택 화면 */
+  needsAmount!: boolean;
   status!: PartnerPaymentIntentStatus;
   returnOrigin!: string;
   expiresAt!: string;

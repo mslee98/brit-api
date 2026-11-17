@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AdminsModule } from '../admins/admins.module';
@@ -21,7 +22,13 @@ import { PartnerClientSecretEntity } from './infrastructure/entities/partner-cli
 import { PartnerClientEntity } from './infrastructure/entities/partner-client.entity';
 import { PartnerCoinLedgerEntryEntity } from './infrastructure/entities/partner-coin-ledger-entry.entity';
 import { PartnerCoinWalletEntity } from './infrastructure/entities/partner-coin-wallet.entity';
+import { PartnerExchangeAttemptEntity } from './infrastructure/entities/partner-exchange-attempt.entity';
+import { PartnerExchangeCoinLotEntity } from './infrastructure/entities/partner-exchange-coin-lot.entity';
 import { PartnerExchangeEntity } from './infrastructure/entities/partner-exchange.entity';
+import { PartnerExchangeEventEntity } from './infrastructure/entities/partner-exchange-event.entity';
+import { PartnerExchangeJobEntity } from './infrastructure/entities/partner-exchange-job.entity';
+import { PartnerExchangeOpsNoteEntity } from './infrastructure/entities/partner-exchange-ops-note.entity';
+import { PartnerWebhookDeliveryEntity } from './infrastructure/entities/partner-webhook-delivery.entity';
 import { PartnerFeeAccrualEntity } from './infrastructure/entities/partner-fee-accrual.entity';
 import { PartnerFeePolicyEntity } from './infrastructure/entities/partner-fee-policy.entity';
 import { PartnerLinkSessionEntity } from './infrastructure/entities/partner-link-session.entity';
@@ -29,14 +36,22 @@ import { PartnerMemberEntity } from './infrastructure/entities/partner-member.en
 import { PartnerPaymentIntentEntity } from './infrastructure/entities/partner-payment-intent.entity';
 import { PartnerEntity } from './infrastructure/entities/partner.entity';
 import { UserPartnerLinkEntity } from './infrastructure/entities/user-partner-link.entity';
+import { PartnerChargeSettlementService } from './partner-charge-settlement.service';
 import { PartnerClientsService } from './partner-clients.service';
 import { PartnerCoinService } from './partner-coin.service';
+import { PartnerExchangeJobsService } from './partner-exchange-jobs.service';
+import { PartnerExchangeJobsWorker } from './partner-exchange-jobs.worker';
 import { PartnerExchangeService } from './partner-exchange.service';
+import { PartnerReconciliationService } from './partner-reconciliation.service';
+import { PartnerWebhookDeliveriesService } from './partner-webhook-deliveries.service';
+import { PartnerWebhookDeliveryWorker } from './partner-webhook-delivery.worker';
 import { PartnerExchangesController } from './partner-exchanges.controller';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 import { PartnerLinkSessionsController } from './partner-link-sessions.controller';
 import { PartnerLinkSessionsService } from './partner-link-sessions.service';
 import { PartnerMembersService } from './partner-members.service';
+import { PartnerOperationsClient } from './partner-operations.client';
+import { PartnerOperationsService } from './partner-operations.service';
 import { PartnerPaymentIntentsController } from './partner-payment-intents.controller';
 import { PartnerPaymentIntentsService } from './partner-payment-intents.service';
 import { PartnerPortalClientsController } from './partner-portal-clients.controller';
@@ -48,10 +63,11 @@ import { PartnersService } from './partners.service';
 
 /**
  * 제휴 업체 도메인.
- * Admin 온보딩·Client·수수료 + 포털 조회 + CHARGE/REDEEM + Intent(B3).
+ * Admin 온보딩·Client·수수료 + 포털 조회 + CHARGE/REDEEM + Intent(B4).
  */
 @Module({
   imports: [
+    ConfigModule,
     TypeOrmModule.forFeature([
       PartnerEntity,
       PartnerMemberEntity,
@@ -64,6 +80,12 @@ import { PartnersService } from './partners.service';
       PartnerPaymentIntentEntity,
       PartnerAssetEntity,
       PartnerExchangeEntity,
+      PartnerExchangeCoinLotEntity,
+      PartnerExchangeAttemptEntity,
+      PartnerExchangeEventEntity,
+      PartnerExchangeJobEntity,
+      PartnerWebhookDeliveryEntity,
+      PartnerExchangeOpsNoteEntity,
       PartnerFeePolicyEntity,
       PartnerFeeAccrualEntity,
       PartnerCoinWalletEntity,
@@ -100,6 +122,14 @@ import { PartnersService } from './partners.service';
     PartnerCoinService,
     PartnerWalletsService,
     PartnerExchangeService,
+    PartnerExchangeJobsService,
+    PartnerExchangeJobsWorker,
+    PartnerWebhookDeliveriesService,
+    PartnerWebhookDeliveryWorker,
+    PartnerOperationsClient,
+    PartnerChargeSettlementService,
+    PartnerOperationsService,
+    PartnerReconciliationService,
     PartnerMemberGuard,
     PartnerClientAuthGuard,
   ],
@@ -111,6 +141,11 @@ import { PartnersService } from './partners.service';
     PartnerFeePoliciesService,
     PartnerPortalService,
     PartnerExchangeService,
+    PartnerExchangeJobsService,
+    PartnerWebhookDeliveriesService,
+    PartnerOperationsService,
+    PartnerChargeSettlementService,
+    PartnerReconciliationService,
     PartnerPaymentIntentsService,
     PartnerCoinService,
   ],

@@ -111,6 +111,8 @@ type LockSellableParams = {
   description?: string | null;
 };
 
+type LockNonSellableParams = LockSellableParams;
+
 type ReleaseSellableParams = {
   userId: string;
   amount: string;
@@ -123,6 +125,8 @@ type ReleaseSellableParams = {
   referenceId: string | null;
   description?: string | null;
 };
+
+type ReleaseNonSellableParams = ReleaseSellableParams;
 
 export type ConsumeLockedAllocation = {
   coinLotId: string;
@@ -139,6 +143,8 @@ type ConsumeLockedSellableParams = {
   transactionId: string;
   sequenceNo: number;
 };
+
+type ConsumeLockedNonSellableParams = ConsumeLockedSellableParams;
 
 /**
  * 사용자 Coin Wallet / Lot / Ledger.
@@ -659,6 +665,88 @@ export class CoinService {
   }
 
   /**
+   * B4-1 CHARGE: 판매 불가 Coin을 available → locked로 이동.
+   * FIFO Lot 할당 결과를 반환한다.
+   */
+  async lockNonSellableInTransaction(
+    manager: EntityManager,
+    params: LockNonSellableParams,
+  ): Promise<CoinLotAllocation[]> {
+    this.assertPositiveAmount(params.amount);
+    const wallet = await this.lockWallet(manager, params.userId);
+
+    if (BigInt(wallet.nonSellableBalance) < BigInt(params.amount)) {
+      throw CoinDomainException.balanceInsufficient();
+    }
+
+    const lotRepository = manager.getRepository(UserCoinLotEntity);
+    const lots = await lotRepository.find({
+      where: {
+        userId: params.userId,
+        isSellable: false,
+        status: In([CoinLotStatus.AVAILABLE, CoinLotStatus.PARTIALLY_USED]),
+      },
+      order: { availableAt: 'ASC', id: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+
+    let remainingToLock = BigInt(params.amount);
+    const transactionId = randomUUID();
+    let sequenceNo = 1;
+    const allocations: CoinLotAllocation[] = [];
+
+    for (const lot of lots) {
+      if (remainingToLock <= 0n) {
+        break;
+      }
+      if (BigInt(lot.remainingAmount) <= 0n) {
+        continue;
+      }
+
+      const take = minAmount(lot.remainingAmount, remainingToLock.toString());
+      lot.remainingAmount = subAmount(lot.remainingAmount, take);
+      lot.lockedAmount = addAmount(lot.lockedAmount, take);
+      lot.status = this.resolveLotStatus(lot);
+      await lotRepository.save(lot);
+
+      allocations.push({ coinLotId: lot.id, lockedAmount: take });
+
+      await this.insertLedger(manager, {
+        transactionId,
+        sequenceNo,
+        userId: params.userId,
+        coinLotId: lot.id,
+        entryType: CoinLedgerEntryType.PARTNER_CHARGE_LOCKED,
+        nonSellableDelta: `-${take}`,
+        sellableDelta: '0',
+        lockedNonSellableDelta: take,
+        lockedSellableDelta: '0',
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+        description: params.description ?? null,
+      });
+      sequenceNo += 1;
+      remainingToLock -= BigInt(take);
+    }
+
+    if (remainingToLock > 0n) {
+      throw CoinDomainException.balanceInsufficient();
+    }
+
+    wallet.nonSellableBalance = subAmount(
+      wallet.nonSellableBalance,
+      params.amount,
+    );
+    wallet.lockedNonSellableBalance = addAmount(
+      wallet.lockedNonSellableBalance,
+      params.amount,
+    );
+    await manager.getRepository(UserCoinWalletEntity).save(wallet);
+
+    return allocations;
+  }
+
+  /**
    * 판매 주문 취소 등: locked → available 복원.
    * allocations는 호출측이 sell_order_coin_lots 기준으로 계산한 unlock 가능량.
    */
@@ -746,6 +834,95 @@ export class CoinService {
   }
 
   /**
+   * B4: CHARGE 실패 확정 등 — locked nonSellable → available 복원.
+   * allocations는 partner_exchange_coin_lots 기준 unlock 가능량.
+   */
+  async releaseNonSellableInTransaction(
+    manager: EntityManager,
+    params: ReleaseNonSellableParams,
+  ): Promise<Array<{ coinLotId: string; releasedAmount: string }>> {
+    this.assertPositiveAmount(params.amount);
+    const wallet = await this.lockWallet(manager, params.userId);
+
+    if (BigInt(wallet.lockedNonSellableBalance) < BigInt(params.amount)) {
+      throw CoinDomainException.balanceInsufficient();
+    }
+
+    const lotRepository = manager.getRepository(UserCoinLotEntity);
+    let remainingToRelease = BigInt(params.amount);
+    const transactionId = randomUUID();
+    let sequenceNo = 1;
+    const released: Array<{ coinLotId: string; releasedAmount: string }> = [];
+
+    for (let i = params.allocations.length - 1; i >= 0; i -= 1) {
+      if (remainingToRelease <= 0n) {
+        break;
+      }
+      const alloc = params.allocations[i];
+      if (BigInt(alloc.availableToRelease) <= 0n) {
+        continue;
+      }
+
+      const lot = await lotRepository.findOne({
+        where: { id: alloc.coinLotId, userId: params.userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lot) {
+        throw CoinDomainException.lotNotFound();
+      }
+
+      const take = minAmount(
+        alloc.availableToRelease,
+        remainingToRelease.toString(),
+      );
+      if (BigInt(lot.lockedAmount) < BigInt(take)) {
+        throw CoinDomainException.lotNotAvailable();
+      }
+
+      lot.lockedAmount = subAmount(lot.lockedAmount, take);
+      lot.remainingAmount = addAmount(lot.remainingAmount, take);
+      lot.status = this.resolveLotStatus(lot);
+      lot.consumedAt = null;
+      await lotRepository.save(lot);
+
+      released.push({ coinLotId: lot.id, releasedAmount: take });
+
+      await this.insertLedger(manager, {
+        transactionId,
+        sequenceNo,
+        userId: params.userId,
+        coinLotId: lot.id,
+        entryType: CoinLedgerEntryType.PARTNER_CHARGE_RELEASED,
+        nonSellableDelta: take,
+        sellableDelta: '0',
+        lockedNonSellableDelta: `-${take}`,
+        lockedSellableDelta: '0',
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+        description: params.description ?? null,
+      });
+      sequenceNo += 1;
+      remainingToRelease -= BigInt(take);
+    }
+
+    if (remainingToRelease > 0n) {
+      throw CoinDomainException.lotNotAvailable();
+    }
+
+    wallet.lockedNonSellableBalance = subAmount(
+      wallet.lockedNonSellableBalance,
+      params.amount,
+    );
+    wallet.nonSellableBalance = addAmount(
+      wallet.nonSellableBalance,
+      params.amount,
+    );
+    await manager.getRepository(UserCoinWalletEntity).save(wallet);
+
+    return released;
+  }
+
+  /**
    * 판매 주문 lock 상태 Lot을 실제 소비한다 (P2P 이전).
    * sellableBalance는 건드리지 않고 lockedSellableBalance만 감소한다.
    * 원장 1건(합산)을 남긴다.
@@ -811,6 +988,77 @@ export class CoinService {
       sellableDelta: '0',
       lockedNonSellableDelta: '0',
       lockedSellableDelta: `-${total.toString()}`,
+      referenceType: params.referenceType,
+      referenceId: params.referenceId,
+      description: params.description ?? null,
+    });
+  }
+
+  /**
+   * B4-3 CHARGE 확정: locked nonSellable만 소비.
+   * B4-1 lock이 이미 nonSellable→locked로 옮겼으므로 nonSellableBalance는 건드리지 않는다.
+   */
+  async consumeLockedNonSellableInTransaction(
+    manager: EntityManager,
+    params: ConsumeLockedNonSellableParams,
+  ): Promise<void> {
+    const total = params.allocations.reduce(
+      (sum, row) => sum + BigInt(row.amount),
+      0n,
+    );
+    if (total <= 0n) {
+      throw CoinDomainException.invalidAmount();
+    }
+    this.assertPositiveAmount(total.toString());
+
+    const wallet = await this.lockWallet(manager, params.userId);
+    if (BigInt(wallet.lockedNonSellableBalance) < total) {
+      throw CoinDomainException.balanceInsufficient();
+    }
+
+    const lotRepository = manager.getRepository(UserCoinLotEntity);
+    const now = new Date();
+
+    for (const allocation of params.allocations) {
+      if (BigInt(allocation.amount) <= 0n) {
+        throw CoinDomainException.invalidAmount();
+      }
+      const lot = await lotRepository.findOne({
+        where: { id: allocation.coinLotId, userId: params.userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lot) {
+        throw CoinDomainException.lotNotFound();
+      }
+      if (BigInt(lot.lockedAmount) < BigInt(allocation.amount)) {
+        throw CoinDomainException.lotNotAvailable();
+      }
+
+      lot.lockedAmount = subAmount(lot.lockedAmount, allocation.amount);
+      lot.consumedAmount = addAmount(lot.consumedAmount, allocation.amount);
+      lot.status = this.resolveLotStatus(lot);
+      if (lot.status === CoinLotStatus.FULLY_CONSUMED) {
+        lot.consumedAt = now;
+      }
+      await lotRepository.save(lot);
+    }
+
+    wallet.lockedNonSellableBalance = subAmount(
+      wallet.lockedNonSellableBalance,
+      total.toString(),
+    );
+    await manager.getRepository(UserCoinWalletEntity).save(wallet);
+
+    await this.insertLedger(manager, {
+      transactionId: params.transactionId,
+      sequenceNo: params.sequenceNo,
+      userId: params.userId,
+      coinLotId: params.allocations[0]?.coinLotId ?? null,
+      entryType: params.entryType,
+      nonSellableDelta: '0',
+      sellableDelta: '0',
+      lockedNonSellableDelta: `-${total.toString()}`,
+      lockedSellableDelta: '0',
       referenceType: params.referenceType,
       referenceId: params.referenceId,
       description: params.description ?? null,

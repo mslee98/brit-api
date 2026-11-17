@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { PartnerClientEnvironment } from '../domain/enums/partner-client-environment.enum';
+import { PartnerClientProcessingModel } from '../domain/enums/partner-client-processing-model.enum';
 import { PartnerClientScopeCode } from '../domain/enums/partner-client-scope-code.enum';
 import { PartnerClientStatus } from '../domain/enums/partner-client-status.enum';
 import { PartnerClientType } from '../domain/enums/partner-client-type.enum';
@@ -27,6 +28,12 @@ export class PartnerClientResponseDto {
 
   @ApiPropertyOptional({ nullable: true })
   webhookUrl!: string | null;
+
+  @ApiProperty({ enum: PartnerClientProcessingModel })
+  processingModel!: PartnerClientProcessingModel;
+
+  @ApiPropertyOptional({ nullable: true })
+  operationsBaseUrl!: string | null;
 
   @ApiProperty({ enum: PartnerClientStatus })
   status!: PartnerClientStatus;
@@ -62,6 +69,9 @@ export class PartnerClientResponseDto {
     dto.environment = entity.environment;
     dto.name = entity.name;
     dto.webhookUrl = entity.webhookUrl;
+    dto.processingModel =
+      entity.processingModel ?? PartnerClientProcessingModel.LEGACY_CONFIRM;
+    dto.operationsBaseUrl = entity.operationsBaseUrl ?? null;
     dto.status = entity.status;
     dto.scopes =
       extras?.scopes ??
@@ -83,6 +93,20 @@ export class PartnerClientIssuedResponseDto extends PartnerClientResponseDto {
   })
   apiSecretPlaintext!: string | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Operations HMAC 서명 키 원문(발급 시 1회). 업체 서버에만 보관.',
+  })
+  operationsSigningSecretPlaintext!: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Webhook HMAC 서명 키 원문(발급/회전 시 1회). 업체 서버에만 보관.',
+  })
+  webhookSecretPlaintext!: string | null;
+
   static fromIssued(
     entity: PartnerClientEntity,
     extras: {
@@ -90,12 +114,17 @@ export class PartnerClientIssuedResponseDto extends PartnerClientResponseDto {
       origins: string[];
       hasActiveApiSecret: boolean;
       apiSecretPlaintext: string | null;
+      operationsSigningSecretPlaintext?: string | null;
+      webhookSecretPlaintext?: string | null;
     },
   ): PartnerClientIssuedResponseDto {
     const base = PartnerClientResponseDto.from(entity, extras);
     const dto = new PartnerClientIssuedResponseDto();
     Object.assign(dto, base);
     dto.apiSecretPlaintext = extras.apiSecretPlaintext;
+    dto.operationsSigningSecretPlaintext =
+      extras.operationsSigningSecretPlaintext ?? null;
+    dto.webhookSecretPlaintext = extras.webhookSecretPlaintext ?? null;
     return dto;
   }
 }

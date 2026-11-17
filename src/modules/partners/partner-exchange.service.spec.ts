@@ -17,12 +17,17 @@ import { PartnerFeeTarget } from './domain/enums/partner-fee-target.enum';
 import { PartnerStatus } from './domain/enums/partner-status.enum';
 import { UserPartnerLinkStatus } from './domain/enums/user-partner-link-status.enum';
 import { PartnerAssetEntity } from './infrastructure/entities/partner-asset.entity';
+import { PartnerExchangeJobStatus } from './domain/enums/partner-exchange-job-status.enum';
+import { PartnerExchangeJobType } from './domain/enums/partner-exchange-job-type.enum';
+import { PartnerExchangeCoinLotEntity } from './infrastructure/entities/partner-exchange-coin-lot.entity';
 import { PartnerExchangeEntity } from './infrastructure/entities/partner-exchange.entity';
+import { PartnerExchangeJobEntity } from './infrastructure/entities/partner-exchange-job.entity';
 import { PartnerFeeAccrualEntity } from './infrastructure/entities/partner-fee-accrual.entity';
 import { PartnerFeePolicyEntity } from './infrastructure/entities/partner-fee-policy.entity';
 import { PartnerEntity } from './infrastructure/entities/partner.entity';
 import { UserPartnerLinkEntity } from './infrastructure/entities/user-partner-link.entity';
 import { PartnerCoinService } from './partner-coin.service';
+import { PartnerExchangeJobsService } from './partner-exchange-jobs.service';
 import { PartnerExchangeService } from './partner-exchange.service';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 
@@ -39,10 +44,14 @@ describe('PartnerExchangeService flow', () => {
   const clientId = 'client-1';
 
   let service: PartnerExchangeService;
-  let coinService: jest.Mocked<Pick<
-    CoinService,
-    'debitNonSellable' | 'creditSellable'
-  >>;
+  let coinService: jest.Mocked<
+    Pick<
+      CoinService,
+      'debitNonSellable' | 'creditSellable' | 'lockNonSellableInTransaction'
+    >
+  >;
+  let exchangeLots: PartnerExchangeCoinLotEntity[];
+  let exchangeJobs: PartnerExchangeJobEntity[];
   let partnerCoinService: jest.Mocked<
     Pick<PartnerCoinService, 'creditAvailable' | 'debitAvailable'>
   >;
@@ -162,11 +171,16 @@ describe('PartnerExchangeService flow', () => {
     links = new Map();
     exchanges = new Map();
     accruals = [];
+    exchangeLots = [];
+    exchangeJobs = [];
     seedPartnerWorld();
 
     coinService = {
       debitNonSellable: jest.fn().mockResolvedValue(undefined),
       creditSellable: jest.fn().mockResolvedValue(undefined),
+      lockNonSellableInTransaction: jest.fn().mockResolvedValue([
+        { coinLotId: 'lot-1', lockedAmount: '10000' },
+      ]),
     };
     partnerCoinService = {
       creditAvailable: jest.fn().mockResolvedValue(undefined),
@@ -191,13 +205,83 @@ describe('PartnerExchangeService flow', () => {
       },
     };
 
+    const lotRepo = {
+      create: (data: Partial<PartnerExchangeCoinLotEntity>) =>
+        ({ ...data }) as PartnerExchangeCoinLotEntity,
+      save: async (entity: PartnerExchangeCoinLotEntity) => {
+        if (!entity.id) entity.id = `ex-lot-${exchangeLots.length + 1}`;
+        exchangeLots.push({ ...entity });
+        return entity;
+      },
+    };
+
+    const jobRepo = {
+      create: (data: Partial<PartnerExchangeJobEntity>) =>
+        ({ ...data }) as PartnerExchangeJobEntity,
+      save: async (entity: PartnerExchangeJobEntity) => {
+        if (!entity.id) entity.id = `ex-job-${exchangeJobs.length + 1}`;
+        exchangeJobs.push({ ...entity });
+        return entity;
+      },
+      findOne: async (options: {
+        where?: Record<string, unknown>;
+        lock?: unknown;
+      }) => {
+        const where = options.where ?? {};
+        return (
+          exchangeJobs.find((row) =>
+            Object.entries(where).every(
+              ([k, v]) => (row as Record<string, unknown>)[k] === v,
+            ),
+          ) ?? null
+        );
+      },
+    };
+
     const manager = {
       getRepository: (entity: unknown) => {
         if (entity === PartnerExchangeEntity) return exchangeRepo;
         if (entity === PartnerFeeAccrualEntity) return accrualRepo;
+        if (entity === PartnerExchangeCoinLotEntity) return lotRepo;
+        if (entity === PartnerExchangeJobEntity) return jobRepo;
         throw new Error(`unexpected repo ${String(entity)}`);
       },
     } as unknown as EntityManager;
+
+    const partnerExchangeJobsService = {
+      enqueueCreditJobInTransaction: jest
+        .fn()
+        .mockImplementation(
+          async (
+            m: EntityManager,
+            partnerExchangeId: string,
+            now: Date = new Date(),
+          ) => {
+            const repo = m.getRepository(
+              PartnerExchangeJobEntity,
+            ) as typeof jobRepo;
+            const existing = await repo.findOne({
+              where: { partnerExchangeId },
+            });
+            if (existing) return existing;
+            return repo.save(
+              repo.create({
+                partnerExchangeId,
+                jobType: PartnerExchangeJobType.CREDIT,
+                status: PartnerExchangeJobStatus.PENDING,
+                attemptCount: 0,
+                nextRunAt: now,
+                lockedBy: null,
+                leaseExpiresAt: null,
+                fenceToken: '0',
+                lastErrorCode: null,
+                completedAt: null,
+              }),
+            );
+          },
+        ),
+      ensureCreditJob: jest.fn().mockResolvedValue(undefined),
+    };
 
     const dataSource = {
       transaction: async <T>(fn: (m: EntityManager) => Promise<T>) =>
@@ -228,6 +312,10 @@ describe('PartnerExchangeService flow', () => {
           }),
         },
         { provide: DataSource, useValue: dataSource },
+        {
+          provide: PartnerExchangeJobsService,
+          useValue: partnerExchangeJobsService,
+        },
         {
           provide: getRepositoryToken(PartnerEntity),
           useValue: makeRepo(partners),
@@ -342,6 +430,61 @@ describe('PartnerExchangeService flow', () => {
     expect(
       partnerCoinService.debitAvailable.mock.invocationCallOrder[0],
     ).toBeLessThan(coinService.creditSellable.mock.invocationCallOrder[0]);
+  });
+
+  it('beginChargeLock: ASSET_LOCKED + lot rows + CREDIT job, 업체 credit/수수료 없음', async () => {
+    const locked = await service.beginChargeLock(partnerId, clientId, {
+      idempotencyKey: 'intent:lock-1',
+      partnerUserKey: 'A-123',
+      amount: '10000',
+    });
+
+    expect(locked.status).toBe(PartnerExchangeStatus.ASSET_LOCKED);
+    expect(locked.exchangeType).toBe(PartnerExchangeType.CHARGE);
+    expect(coinService.lockNonSellableInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        userId,
+        amount: '10000',
+        referenceType: 'PARTNER_EXCHANGE',
+        referenceId: locked.id,
+      }),
+    );
+    expect(exchangeLots).toHaveLength(1);
+    expect(exchangeLots[0]).toMatchObject({
+      partnerExchangeId: locked.id,
+      coinLotId: 'lot-1',
+      lockedAmount: '10000',
+      remainingLockedAmount: '10000',
+    });
+    expect(exchangeJobs).toHaveLength(1);
+    expect(exchangeJobs[0]).toMatchObject({
+      partnerExchangeId: locked.id,
+      jobType: PartnerExchangeJobType.CREDIT,
+      status: PartnerExchangeJobStatus.PENDING,
+    });
+    expect(coinService.debitNonSellable).not.toHaveBeenCalled();
+    expect(partnerCoinService.creditAvailable).not.toHaveBeenCalled();
+    expect(accruals).toHaveLength(0);
+  });
+
+  it('beginChargeLock 멱등: 동일 키는 잠금 재호출 없음', async () => {
+    const first = await service.beginChargeLock(partnerId, clientId, {
+      idempotencyKey: 'intent:lock-idem',
+      partnerUserKey: 'A-123',
+      amount: '10000',
+    });
+    coinService.lockNonSellableInTransaction.mockClear();
+
+    const second = await service.beginChargeLock(partnerId, clientId, {
+      idempotencyKey: 'intent:lock-idem',
+      partnerUserKey: 'A-123',
+      amount: '10000',
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.status).toBe(PartnerExchangeStatus.ASSET_LOCKED);
+    expect(coinService.lockNonSellableInTransaction).not.toHaveBeenCalled();
   });
 
   it('동일 idempotencyKey CHARGE는 기존 결과를 반환하고 원장을 다시 건드리지 않는다', async () => {

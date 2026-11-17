@@ -12,6 +12,7 @@ import {
 import { UserEntity } from '../../../users/infrastructure/entities/user.entity';
 import { PartnerExchangeStatus } from '../../domain/enums/partner-exchange-status.enum';
 import { PartnerExchangeType } from '../../domain/enums/partner-exchange-type.enum';
+import { PartnerExternalResultStatus } from '../../domain/enums/partner-external-result-status.enum';
 import { PartnerAssetEntity } from './partner-asset.entity';
 import { PartnerClientEntity } from './partner-client.entity';
 import { PartnerEntity } from './partner.entity';
@@ -102,6 +103,21 @@ export class PartnerExchangeEntity {
     nullable: true,
   })
   partnerTransactionId!: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 30,
+    name: 'external_result_status',
+    default: PartnerExternalResultStatus.NOT_REQUESTED,
+  })
+  externalResultStatus!: PartnerExternalResultStatus;
+
+  @Column({
+    type: 'timestamptz',
+    name: 'external_result_at',
+    nullable: true,
+  })
+  externalResultAt!: Date | null;
 
   @Column({ type: 'timestamptz', name: 'requested_at', default: () => 'now()' })
   requestedAt!: Date;

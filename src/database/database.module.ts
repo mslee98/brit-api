@@ -41,7 +41,14 @@ import { PartnerClientSecretEntity } from '../modules/partners/infrastructure/en
 import { PartnerClientEntity } from '../modules/partners/infrastructure/entities/partner-client.entity';
 import { PartnerCoinLedgerEntryEntity } from '../modules/partners/infrastructure/entities/partner-coin-ledger-entry.entity';
 import { PartnerCoinWalletEntity } from '../modules/partners/infrastructure/entities/partner-coin-wallet.entity';
+import { PartnerExchangeAttemptEntity } from '../modules/partners/infrastructure/entities/partner-exchange-attempt.entity';
+import { PartnerExchangeCoinLotEntity } from '../modules/partners/infrastructure/entities/partner-exchange-coin-lot.entity';
 import { PartnerExchangeEntity } from '../modules/partners/infrastructure/entities/partner-exchange.entity';
+import { PartnerExchangeEventEntity } from '../modules/partners/infrastructure/entities/partner-exchange-event.entity';
+import { PartnerExchangeJobEntity } from '../modules/partners/infrastructure/entities/partner-exchange-job.entity';
+import { PartnerPaymentIntentEntity } from '../modules/partners/infrastructure/entities/partner-payment-intent.entity';
+import { PartnerExchangeOpsNoteEntity } from '../modules/partners/infrastructure/entities/partner-exchange-ops-note.entity';
+import { PartnerWebhookDeliveryEntity } from '../modules/partners/infrastructure/entities/partner-webhook-delivery.entity';
 import { PartnerFeeAccrualEntity } from '../modules/partners/infrastructure/entities/partner-fee-accrual.entity';
 import { PartnerFeePolicyEntity } from '../modules/partners/infrastructure/entities/partner-fee-policy.entity';
 import { PartnerMemberEntity } from '../modules/partners/infrastructure/entities/partner-member.entity';
@@ -91,8 +98,15 @@ export const entities = [
   PartnerClientOriginEntity,
   UserPartnerLinkEntity,
   PartnerLinkSessionEntity,
+  PartnerPaymentIntentEntity,
   PartnerAssetEntity,
   PartnerExchangeEntity,
+  PartnerExchangeCoinLotEntity,
+  PartnerExchangeAttemptEntity,
+  PartnerExchangeEventEntity,
+  PartnerExchangeJobEntity,
+  PartnerWebhookDeliveryEntity,
+  PartnerExchangeOpsNoteEntity,
   PartnerFeePolicyEntity,
   PartnerFeeAccrualEntity,
   PartnerCoinWalletEntity,

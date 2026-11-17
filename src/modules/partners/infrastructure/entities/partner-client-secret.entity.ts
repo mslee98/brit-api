@@ -36,6 +36,13 @@ export class PartnerClientSecretEntity {
   @Column({ type: 'varchar', length: 255, name: 'secret_hash' })
   secretHash!: string;
 
+  /**
+   * OPERATIONS_SIGNING_SECRET · WEBHOOK_SECRET — AES-GCM 암호문 (iv+tag+ct).
+   * API_SECRET은 null (해시만).
+   */
+  @Column({ type: 'bytea', name: 'secret_encrypted', nullable: true })
+  secretEncrypted!: Buffer | null;
+
   @Column({
     type: 'varchar',
     length: 20,

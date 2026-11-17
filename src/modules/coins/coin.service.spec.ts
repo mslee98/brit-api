@@ -553,6 +553,141 @@ describe('CoinService P0 acceptance', () => {
     expect(store.ledgers.length).toBe(beforeLedgers);
   });
 
+  it('lockNonSellable moves nonSellable→locked', async () => {
+    await service.adminCredit(
+      adminId,
+      UserRole.SYS_ADMIN,
+      userId,
+      { amount: '400000', sellable: false, reason: '테스트 지급' },
+      null,
+      randomUUID(),
+    );
+
+    const manager = makeManager(store);
+    const allocations = await service.lockNonSellableInTransaction(manager, {
+      userId,
+      amount: '400000',
+      referenceType: 'PARTNER_EXCHANGE',
+      referenceId: 'pex-001',
+    });
+
+    expect(allocations).toHaveLength(1);
+    expect(allocations[0]?.lockedAmount).toBe('400000');
+    const wallet = store.wallets.get(userId);
+    expect(wallet?.nonSellableBalance).toBe('0');
+    expect(wallet?.lockedNonSellableBalance).toBe('400000');
+    expect(
+      store.ledgers.some(
+        (e) => e.entryType === CoinLedgerEntryType.PARTNER_CHARGE_LOCKED,
+      ),
+    ).toBe(true);
+  });
+
+  it('lockNonSellable fails when nonSellable insufficient', async () => {
+    await service.adminCredit(
+      adminId,
+      UserRole.SYS_ADMIN,
+      userId,
+      { amount: '100000', sellable: false, reason: '소량' },
+      null,
+      randomUUID(),
+    );
+    const before = { ...store.wallets.get(userId)! };
+
+    await expect(
+      service.lockNonSellableInTransaction(makeManager(store), {
+        userId,
+        amount: '200000',
+        referenceType: 'PARTNER_EXCHANGE',
+        referenceId: null,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(store.wallets.get(userId)?.nonSellableBalance).toBe(
+      before.nonSellableBalance,
+    );
+  });
+
+  it('releaseNonSellable restores locked→nonSellable', async () => {
+    await service.adminCredit(
+      adminId,
+      UserRole.SYS_ADMIN,
+      userId,
+      { amount: '250000', sellable: false, reason: '지급' },
+      null,
+      randomUUID(),
+    );
+    const manager = makeManager(store);
+    const allocations = await service.lockNonSellableInTransaction(manager, {
+      userId,
+      amount: '250000',
+      referenceType: 'PARTNER_EXCHANGE',
+      referenceId: 'pex-002',
+    });
+
+    await service.releaseNonSellableInTransaction(manager, {
+      userId,
+      amount: '250000',
+      allocations: allocations.map((a) => ({
+        coinLotId: a.coinLotId,
+        availableToRelease: a.lockedAmount,
+      })),
+      referenceType: 'PARTNER_EXCHANGE',
+      referenceId: 'pex-002',
+    });
+
+    const wallet = store.wallets.get(userId);
+    expect(wallet?.nonSellableBalance).toBe('250000');
+    expect(wallet?.lockedNonSellableBalance).toBe('0');
+    expect(
+      store.ledgers.some(
+        (e) => e.entryType === CoinLedgerEntryType.PARTNER_CHARGE_RELEASED,
+      ),
+    ).toBe(true);
+  });
+
+  it('consumeLockedNonSellable: lock→consume reduces total, not nonSellable twice', async () => {
+    await service.adminCredit(
+      adminId,
+      UserRole.SYS_ADMIN,
+      userId,
+      { amount: '100000', sellable: false, reason: '지급' },
+      null,
+      randomUUID(),
+    );
+    const manager = makeManager(store);
+    const allocations = await service.lockNonSellableInTransaction(manager, {
+      userId,
+      amount: '50000',
+      referenceType: 'PARTNER_EXCHANGE',
+      referenceId: 'pex-consume',
+    });
+    expect(store.wallets.get(userId)?.nonSellableBalance).toBe('50000');
+    expect(store.wallets.get(userId)?.lockedNonSellableBalance).toBe('50000');
+
+    await service.consumeLockedNonSellableInTransaction(manager, {
+      userId,
+      allocations: allocations.map((a) => ({
+        coinLotId: a.coinLotId,
+        amount: a.lockedAmount,
+      })),
+      entryType: CoinLedgerEntryType.PARTNER_CHARGE_DEBIT,
+      referenceType: 'PARTNER_EXCHANGE',
+      referenceId: 'pex-consume',
+      transactionId: randomUUID(),
+      sequenceNo: 1,
+    });
+
+    const wallet = store.wallets.get(userId);
+    expect(wallet?.nonSellableBalance).toBe('50000');
+    expect(wallet?.lockedNonSellableBalance).toBe('0');
+    expect(
+      store.ledgers.some(
+        (e) => e.entryType === CoinLedgerEntryType.PARTNER_CHARGE_DEBIT,
+      ),
+    ).toBe(true);
+  });
+
   it('releaseSellable restores locked→sellable', async () => {
     await service.adminCredit(
       adminId,

@@ -68,6 +68,9 @@ describe('PartnerClientsService (업체 포털)', () => {
       {} as Repository<PartnerClientSecretEntity>,
       {} as AuditLogService,
       {} as DataSource,
+      {
+        getOrThrow: jest.fn().mockReturnValue('0'.repeat(64)),
+      } as never,
     );
   });
 

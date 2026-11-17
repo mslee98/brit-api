@@ -13,7 +13,10 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { AuthorizePartnerPaymentIntentDto } from './dto/partner-payment-intent.dto';
+import {
+  AuthorizePartnerPaymentIntentDto,
+  LockPartnerPaymentIntentAmountDto,
+} from './dto/partner-payment-intent.dto';
 import { PartnerPaymentIntentsService } from './partner-payment-intents.service';
 
 /**
@@ -29,7 +32,9 @@ export class EmbedPaymentIntentsController {
   ) {}
 
   @Get(':id')
-  @ApiOperation({ summary: 'B3 — Embed 충전 요청 조회 (금액·잔액·승인 가능 여부)' })
+  @ApiOperation({
+    summary: 'B3/D26 — Embed 충전 요청 조회 (잔액·needsAmount·승인 가능 여부)',
+  })
   get(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -44,6 +49,19 @@ export class EmbedPaymentIntentsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.paymentIntentsService.statusForEmbed(id, user.userId);
+  }
+
+  @Post(':id/lock')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'D26 — Embed에서 CHARGE 금액 확정 (잔액 확인 후 lock)',
+  })
+  lock(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: LockPartnerPaymentIntentAmountDto,
+  ) {
+    return this.paymentIntentsService.lockAmount(id, user.userId, body);
   }
 
   @Post(':id/authorize')

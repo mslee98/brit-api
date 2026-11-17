@@ -15,6 +15,7 @@ import {
   CreatePartnerPaymentIntentDto,
   EmbedPaymentIntentDto,
   EmbedPaymentIntentStatusDto,
+  LockPartnerPaymentIntentAmountDto,
   PartnerPaymentIntentCreatedDto,
   PartnerPaymentIntentViewDto,
 } from './dto/partner-payment-intent.dto';
@@ -72,7 +73,7 @@ export class PartnerPaymentIntentsService {
     }
 
     const partnerUserKey = dto.partnerUserKey.trim();
-    const amount = dto.amount.trim();
+    const amount = dto.amount?.trim() || null;
     const externalOrderId = dto.externalOrderId.trim();
     const assetCode = dto.assetCode?.trim().toUpperCase() || null;
 
@@ -86,14 +87,25 @@ export class PartnerPaymentIntentsService {
     if (!feePolicy) {
       throw PartnerDomainException.feePolicyMissing();
     }
-    const { totalFeeAmount } = calculateTotalFee({
-      grossAmount: amount,
-      feeRateBps: feePolicy.feeRateBps,
-      fixedFeeAmount: feePolicy.fixedFeeAmount,
-      roundingRule: feePolicy.roundingRule,
-    });
-    // Sandbox 동기 CHARGE와 동일: 사용자 MS 차감은 amount. 수수료는 accrual 스냅샷.
-    const totalDebit = amount;
+
+    let feeAmount: string | null = null;
+    let feePolicyId: string | null = null;
+    let totalDebit: string | null = null;
+    let amountLockedAt: Date | null = null;
+
+    if (amount) {
+      const { totalFeeAmount } = calculateTotalFee({
+        grossAmount: amount,
+        feeRateBps: feePolicy.feeRateBps,
+        fixedFeeAmount: feePolicy.fixedFeeAmount,
+        roundingRule: feePolicy.roundingRule,
+      });
+      // 사용자 MS 차감은 amount. 수수료는 accrual 스냅샷.
+      feeAmount = totalFeeAmount;
+      feePolicyId = feePolicy.id;
+      totalDebit = amount;
+      amountLockedAt = new Date();
+    }
 
     const existing = await this.intentRepository.findOne({
       where: { partnerId, externalOrderId },
@@ -101,7 +113,7 @@ export class PartnerPaymentIntentsService {
     if (existing) {
       if (
         existing.partnerUserKey !== partnerUserKey ||
-        existing.amount !== amount ||
+        (existing.amount ?? null) !== amount ||
         (existing.assetCode ?? null) !== assetCode
       ) {
         throw PartnerDomainException.paymentIntentConflict();
@@ -117,8 +129,10 @@ export class PartnerPaymentIntentsService {
         externalOrderId,
         partnerUserKey,
         amount,
-        feeAmount: totalFeeAmount,
+        feeAmount,
+        feePolicyId,
         totalDebit,
+        amountLockedAt,
         assetCode,
         returnOrigin,
         status: PartnerPaymentIntentStatus.CREATED,
@@ -128,6 +142,102 @@ export class PartnerPaymentIntentsService {
     );
 
     return this.toCreatedDto(intent);
+  }
+
+  /**
+   * D26 — Embed에서 충전 금액 확정.
+   * 동일 금액 재호출은 멱등. 다른 금액이면 AMOUNT_LOCKED.
+   * 경합은 amount IS NULL 조건부 UPDATE로 한 번만 성공.
+   */
+  async lockAmount(
+    intentId: string,
+    userId: string,
+    dto: LockPartnerPaymentIntentAmountDto,
+  ): Promise<EmbedPaymentIntentDto> {
+    const intent = await this.requireIntent(intentId);
+    await this.expireIfNeeded(intent);
+    this.assertIntentCreatedForMutation(intent);
+
+    const amount = dto.amount.trim();
+    if (intent.amountLockedAt && intent.amount != null) {
+      if (intent.amount !== amount) {
+        throw PartnerDomainException.paymentIntentAmountAlreadyLocked();
+      }
+      return this.getForEmbed(intentId, userId);
+    }
+
+    const link = await this.linkRepository.findOne({
+      where: {
+        partnerId: intent.partnerId,
+        partnerUserKey: intent.partnerUserKey,
+        status: UserPartnerLinkStatus.ACTIVE,
+      },
+    });
+    if (!link) {
+      throw PartnerDomainException.paymentIntentNotLinked();
+    }
+    if (link.userId !== userId) {
+      throw PartnerDomainException.paymentIntentUserMismatch();
+    }
+
+    const user = await this.userService.findById(userId);
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw PartnerDomainException.userNotActiveForExchange();
+    }
+
+    const wallet = await this.coinService.getWallet(userId);
+    if (BigInt(wallet.nonSellableBalance) < BigInt(amount)) {
+      throw PartnerDomainException.paymentIntentInsufficientBalance();
+    }
+
+    const feePolicy =
+      await this.partnerFeePoliciesService.findApplicableActivePolicy(
+        intent.partnerId,
+        PartnerFeeTarget.CHARGE,
+      );
+    if (!feePolicy) {
+      throw PartnerDomainException.feePolicyMissing();
+    }
+    const { totalFeeAmount } = calculateTotalFee({
+      grossAmount: amount,
+      feeRateBps: feePolicy.feeRateBps,
+      fixedFeeAmount: feePolicy.fixedFeeAmount,
+      roundingRule: feePolicy.roundingRule,
+    });
+
+    const lockedAt = new Date();
+    const updateResult = await this.intentRepository
+      .createQueryBuilder()
+      .update(PartnerPaymentIntentEntity)
+      .set({
+        amount,
+        feeAmount: totalFeeAmount,
+        feePolicyId: feePolicy.id,
+        totalDebit: amount,
+        amountLockedAt: lockedAt,
+      })
+      .where('id = :id', { id: intentId })
+      .andWhere('status = :status', {
+        status: PartnerPaymentIntentStatus.CREATED,
+      })
+      .andWhere('amount IS NULL')
+      .andWhere('amount_locked_at IS NULL')
+      .execute();
+
+    if (!updateResult.affected) {
+      const fresh = await this.requireIntent(intentId);
+      await this.expireIfNeeded(fresh);
+      this.assertIntentCreatedForMutation(fresh);
+      if (fresh.amount != null && fresh.amountLockedAt) {
+        if (fresh.amount !== amount) {
+          throw PartnerDomainException.paymentIntentAmountAlreadyLocked();
+        }
+        return this.getForEmbed(intentId, userId);
+      }
+      throw PartnerDomainException.paymentIntentNotAuthorizable();
+    }
+
+    return this.getForEmbed(intentId, userId);
   }
 
   async getForPartner(
@@ -169,9 +279,17 @@ export class PartnerPaymentIntentsService {
     let canAuthorize = false;
     let blockReason: string | null = null;
     let nonSellableBalanceMs: string | null = null;
+    let needsAmount = false;
+    const amountUnlocked =
+      intent.status === PartnerPaymentIntentStatus.CREATED &&
+      (intent.amount == null || intent.amountLockedAt == null);
 
     if (intent.status === PartnerPaymentIntentStatus.COMPLETED) {
       blockReason = '이미 완료된 충전이에요.';
+    } else if (
+      intent.status === PartnerPaymentIntentStatus.PAYMENT_PROCESSING
+    ) {
+      blockReason = '포인트 지급 확인 중이에요.';
     } else if (intent.status === PartnerPaymentIntentStatus.CANCELLED) {
       blockReason = '취소된 충전 요청이에요.';
     } else if (intent.status === PartnerPaymentIntentStatus.EXPIRED) {
@@ -188,19 +306,28 @@ export class PartnerPaymentIntentsService {
       if (!user || user.status !== UserStatus.ACTIVE) {
         blockReason = 'ACTIVE 사용자만 충전할 수 있어요.';
       } else {
-        canAuthorize = intent.status === PartnerPaymentIntentStatus.CREATED;
         try {
           const wallet = await this.coinService.getWallet(userId);
           nonSellableBalanceMs = wallet.nonSellableBalance;
-          if (
-            canAuthorize &&
-            BigInt(wallet.nonSellableBalance) < BigInt(intent.totalDebit)
-          ) {
-            canAuthorize = false;
-            blockReason = '판매 불가 MS 잔액이 부족해요.';
-          }
         } catch {
           nonSellableBalanceMs = null;
+        }
+
+        if (amountUnlocked) {
+          needsAmount = true;
+          canAuthorize = false;
+          // Embed 금액 선택 UI로 안내 — block 화면이 아님
+          blockReason = null;
+        } else if (intent.status === PartnerPaymentIntentStatus.CREATED) {
+          canAuthorize = true;
+          if (
+            nonSellableBalanceMs != null &&
+            intent.totalDebit != null &&
+            BigInt(nonSellableBalanceMs) < BigInt(intent.totalDebit)
+          ) {
+            canAuthorize = false;
+            blockReason = '충전 가능 잔액이 부족해요.';
+          }
         }
       }
     }
@@ -221,6 +348,7 @@ export class PartnerPaymentIntentsService {
       totalDebitMs: intent.totalDebit,
       assetCode: intent.assetCode,
       nonSellableBalanceMs,
+      needsAmount,
       status: intent.status,
       returnOrigin: intent.returnOrigin,
       expiresAt: intent.expiresAt.toISOString(),
@@ -238,14 +366,18 @@ export class PartnerPaymentIntentsService {
     const intent = await this.requireIntent(intentId);
     await this.expireIfNeeded(intent);
 
-    if (intent.status === PartnerPaymentIntentStatus.COMPLETED) {
+    if (
+      intent.status === PartnerPaymentIntentStatus.COMPLETED ||
+      intent.status === PartnerPaymentIntentStatus.PAYMENT_PROCESSING
+    ) {
       if (intent.authorizedUserId === userId) {
         return this.toEmbedStatus(intent);
       }
       throw PartnerDomainException.paymentIntentNotAuthorizable();
     }
-    if (intent.status !== PartnerPaymentIntentStatus.CREATED) {
-      throw PartnerDomainException.paymentIntentNotAuthorizable();
+    this.assertIntentCreatedForMutation(intent);
+    if (intent.amount == null || intent.amountLockedAt == null) {
+      throw PartnerDomainException.paymentIntentAmountRequired();
     }
 
     const link = await this.linkRepository.findOne({
@@ -275,7 +407,8 @@ export class PartnerPaymentIntentsService {
     await this.intentRepository.save(intent);
 
     try {
-      const exchange = await this.partnerExchangeService.charge(
+      // B4-1 잠금 + B4-4 CREDIT Outbox 동일 커밋. 동기 CREDIT 없음 — Worker가 실행.
+      const exchange = await this.partnerExchangeService.beginChargeLock(
         intent.partnerId,
         intent.partnerClientId,
         {
@@ -287,12 +420,12 @@ export class PartnerPaymentIntentsService {
         },
       );
 
-      intent.status = PartnerPaymentIntentStatus.COMPLETED;
+      intent.status = PartnerPaymentIntentStatus.PAYMENT_PROCESSING;
       intent.partnerExchangeId = exchange.id;
-      intent.completedAt = new Date();
       intent.failureCode = null;
       intent.failureMessage = null;
       await this.intentRepository.save(intent);
+
       return this.toEmbedStatus(intent);
     } catch (error) {
       const { code, message } = extractFailure(error);
@@ -315,9 +448,7 @@ export class PartnerPaymentIntentsService {
     if (intent.status === PartnerPaymentIntentStatus.CANCELLED) {
       return this.toEmbedStatus(intent);
     }
-    if (intent.status !== PartnerPaymentIntentStatus.CREATED) {
-      throw PartnerDomainException.paymentIntentNotAuthorizable();
-    }
+    this.assertIntentCreatedForMutation(intent);
 
     const link = await this.linkRepository.findOne({
       where: {
@@ -382,6 +513,17 @@ export class PartnerPaymentIntentsService {
       intent.status = PartnerPaymentIntentStatus.EXPIRED;
       await this.intentRepository.save(intent);
     }
+  }
+
+  /** authorize/cancel: 만료는 EXPIRED, 그 외 비가역 상태는 NOT_AUTHORIZABLE */
+  private assertIntentCreatedForMutation(
+    intent: PartnerPaymentIntentEntity,
+  ): void {
+    if (intent.status === PartnerPaymentIntentStatus.CREATED) return;
+    if (intent.status === PartnerPaymentIntentStatus.EXPIRED) {
+      throw PartnerDomainException.paymentIntentExpired();
+    }
+    throw PartnerDomainException.paymentIntentNotAuthorizable();
   }
 
   private async requireActivePartner(partnerId: string): Promise<void> {

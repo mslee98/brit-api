@@ -23,12 +23,14 @@ import {
 import { PartnerExchangeResponseDto } from './dto/partner-portal-response.dto';
 import { PartnerDomainException } from './exceptions/partner.exceptions';
 import { PartnerAssetEntity } from './infrastructure/entities/partner-asset.entity';
+import { PartnerExchangeCoinLotEntity } from './infrastructure/entities/partner-exchange-coin-lot.entity';
 import { PartnerExchangeEntity } from './infrastructure/entities/partner-exchange.entity';
 import { PartnerFeeAccrualEntity } from './infrastructure/entities/partner-fee-accrual.entity';
 import { PartnerFeePolicyEntity } from './infrastructure/entities/partner-fee-policy.entity';
 import { PartnerEntity } from './infrastructure/entities/partner.entity';
 import { UserPartnerLinkEntity } from './infrastructure/entities/user-partner-link.entity';
 import { PartnerCoinService } from './partner-coin.service';
+import { PartnerExchangeJobsService } from './partner-exchange-jobs.service';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 import { calculateTotalFee } from './utils/partner-fee.util';
 import { maskPartnerUserKey } from './utils/mask-partner-user-key';
@@ -60,6 +62,7 @@ export class PartnerExchangeService {
     private readonly coinService: CoinService,
     private readonly partnerCoinService: PartnerCoinService,
     private readonly partnerFeePoliciesService: PartnerFeePoliciesService,
+    private readonly partnerExchangeJobsService: PartnerExchangeJobsService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -273,6 +276,7 @@ export class PartnerExchangeService {
 
   /**
    * Sandbox 동기 CHARGE: 사용자 MS 차감 + 업체 잔액 증가 + 수수료 스냅샷.
+   * Intent Embed 경로(B4)는 `beginChargeLock`을 쓴다.
    */
   async charge(
     partnerId: string,
@@ -285,6 +289,164 @@ export class PartnerExchangeService {
       dto,
       exchangeType: PartnerExchangeType.CHARGE,
     });
+  }
+
+  /**
+   * B4-1/B4-4: PIN 후 MS nonSellable 잠금 + Exchange ASSET_LOCKED + CREDIT job.
+   * 잠금과 지급 Outbox는 동일 트랜잭션에서 커밋한다.
+   * 업체 credit·수수료·COMPLETED는 Worker(B4-4) / settle(B4-3)이 담당.
+   */
+  async beginChargeLock(
+    partnerId: string,
+    partnerClientId: string | null,
+    dto: PartnerExchangeRequestDto,
+  ): Promise<PartnerExchangeResponseDto> {
+    await this.requireActivePartner(partnerId);
+
+    const link = await this.linkRepository.findOne({
+      where: {
+        partnerId,
+        partnerUserKey: dto.partnerUserKey.trim(),
+        status: UserPartnerLinkStatus.ACTIVE,
+      },
+    });
+    if (!link) {
+      throw PartnerDomainException.linkNotFound();
+    }
+
+    const user = await this.userService.findById(link.userId);
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw PartnerDomainException.userNotActiveForExchange();
+    }
+
+    const existing = await this.exchangeRepository.findOne({
+      where: { partnerId, idempotencyKey: dto.idempotencyKey },
+    });
+    if (existing) {
+      await this.ensureInFlightCreditJob(existing);
+      return this.mapIdempotentExchange(
+        existing,
+        partnerId,
+        PartnerExchangeType.CHARGE,
+        dto,
+        link,
+      );
+    }
+
+    const asset = await this.resolveAsset(partnerId, dto.assetCode);
+
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const exchangeRepo = manager.getRepository(PartnerExchangeEntity);
+        const dup = await exchangeRepo.findOne({
+          where: { partnerId, idempotencyKey: dto.idempotencyKey },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (dup) {
+          if (this.isInFlightCharge(dup)) {
+            await this.partnerExchangeJobsService.enqueueCreditJobInTransaction(
+              manager,
+              dup.id,
+            );
+          }
+          return this.mapIdempotentExchange(
+            dup,
+            partnerId,
+            PartnerExchangeType.CHARGE,
+            dto,
+            link,
+          );
+        }
+
+        const now = new Date();
+        const exchange = await exchangeRepo.save(
+          exchangeRepo.create({
+            exchangeNumber: this.nextExchangeNumber(PartnerExchangeType.CHARGE),
+            idempotencyKey: dto.idempotencyKey,
+            userPartnerLinkId: link.id,
+            userId: link.userId,
+            partnerId,
+            partnerAssetId: asset.id,
+            partnerClientId,
+            exchangeType: PartnerExchangeType.CHARGE,
+            amount: dto.amount,
+            status: PartnerExchangeStatus.REQUESTED,
+            partnerTransactionId: dto.partnerTransactionId ?? null,
+            requestedAt: now,
+          }),
+        );
+
+        const allocations = await this.coinService.lockNonSellableInTransaction(
+          manager,
+          {
+            userId: link.userId,
+            amount: dto.amount,
+            referenceType: EXCHANGE_REF,
+            referenceId: exchange.id,
+            description: `Partner CHARGE lock ${exchange.exchangeNumber}`,
+          },
+        );
+
+        const lotRepo = manager.getRepository(PartnerExchangeCoinLotEntity);
+        for (const alloc of allocations) {
+          await lotRepo.save(
+            lotRepo.create({
+              partnerExchangeId: exchange.id,
+              coinLotId: alloc.coinLotId,
+              lockedAmount: alloc.lockedAmount,
+              remainingLockedAmount: alloc.lockedAmount,
+            }),
+          );
+        }
+
+        exchange.status = PartnerExchangeStatus.ASSET_LOCKED;
+        exchange.assetLockedAt = new Date();
+        const saved = await exchangeRepo.save(exchange);
+
+        await this.partnerExchangeJobsService.enqueueCreditJobInTransaction(
+          manager,
+          saved.id,
+          saved.assetLockedAt ?? now,
+        );
+
+        return PartnerExchangeResponseDto.from(saved);
+      });
+    } catch (error) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+      const raced = await this.exchangeRepository.findOne({
+        where: { partnerId, idempotencyKey: dto.idempotencyKey },
+      });
+      if (!raced) {
+        throw PartnerDomainException.exchangeIdempotencyConflict();
+      }
+      await this.ensureInFlightCreditJob(raced);
+      return this.mapIdempotentExchange(
+        raced,
+        partnerId,
+        PartnerExchangeType.CHARGE,
+        dto,
+        link,
+      );
+    }
+  }
+
+  private isInFlightCharge(exchange: PartnerExchangeEntity): boolean {
+    return (
+      exchange.status === PartnerExchangeStatus.ASSET_LOCKED ||
+      exchange.status === PartnerExchangeStatus.PARTNER_PROCESSING ||
+      exchange.status === PartnerExchangeStatus.RECONCILIATION_REQUIRED
+    );
+  }
+
+  private async ensureInFlightCreditJob(
+    exchange: PartnerExchangeEntity,
+  ): Promise<void> {
+    if (!this.isInFlightCharge(exchange)) {
+      return;
+    }
+    await this.partnerExchangeJobsService.ensureCreditJob(exchange.id);
   }
 
   /**

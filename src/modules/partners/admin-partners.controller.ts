@@ -47,7 +47,13 @@ import { PartnerClientsService } from './partner-clients.service';
 import { PartnerExchangeService } from './partner-exchange.service';
 import { PartnerFeePoliciesService } from './partner-fee-policies.service';
 import { PartnerMembersService } from './partner-members.service';
+import {
+  CreatePartnerExchangeOpsNoteDto,
+  SearchReconciliationsDto,
+} from './dto/partner-reconciliation.dto';
+import { PartnerReconActionDto } from './dto/partner-recon-action.dto';
 import { PartnerPortalService } from './partner-portal.service';
+import { PartnerReconciliationService } from './partner-reconciliation.service';
 import { PartnerWalletsService } from './partner-wallets.service';
 import { PartnersService } from './partners.service';
 
@@ -63,6 +69,7 @@ export class AdminPartnersController {
     private readonly partnerClientsService: PartnerClientsService,
     private readonly partnerFeePoliciesService: PartnerFeePoliciesService,
     private readonly partnerExchangeService: PartnerExchangeService,
+    private readonly partnerReconciliationService: PartnerReconciliationService,
     private readonly partnerPortalService: PartnerPortalService,
     private readonly partnerWalletsService: PartnerWalletsService,
   ) {}
@@ -71,6 +78,18 @@ export class AdminPartnersController {
   @ApiOperation({ summary: '업체 목록' })
   search(@Query() query: SearchAdminPartnersDto) {
     return this.partnersService.searchAdmin(query);
+  }
+
+  @Get('reconciliations')
+  @ApiOperation({ summary: 'B4-6 운영 대사 큐' })
+  listReconciliations(@Query() query: SearchReconciliationsDto) {
+    return this.partnerReconciliationService.listQueue(query);
+  }
+
+  @Get('reconciliations/metrics')
+  @ApiOperation({ summary: 'B4-6 운영 대사 지표' })
+  getReconciliationMetrics() {
+    return this.partnerReconciliationService.getMetrics();
   }
 
   @Post()
@@ -375,8 +394,104 @@ export class AdminPartnersController {
     return this.partnerClientsService.getClient(partnerId, partnerClientId);
   }
 
+  @Get(':partnerId/exchanges/:exchangeId/recon')
+  @ApiOperation({ summary: 'B4-6 Exchange 대사 상세' })
+  getExchangeRecon(
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('exchangeId', ParseUUIDPipe) exchangeId: string,
+  ) {
+    return this.partnerReconciliationService.getDetail(partnerId, exchangeId);
+  }
+
+  @Post(':partnerId/exchanges/:exchangeId/sync-partner-result')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'B4-6 수동 STATUS 재조회 — 최종이면 settle까지 (partner 검증·감사)',
+  })
+  syncPartnerResult(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('exchangeId', ParseUUIDPipe) exchangeId: string,
+    @Req() req: Request,
+    @Body() body?: PartnerReconActionDto,
+  ) {
+    return this.partnerReconciliationService.sync(
+      user.userId,
+      partnerId,
+      exchangeId,
+      resolveClientIp(req),
+      body?.reason ?? null,
+    );
+  }
+
+  @Post(':partnerId/exchanges/:exchangeId/settle')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'B4-6 외부 확정 결과 반영 — SUCCEEDED/FAILED만 (증거 없는 강제 확정 금지)',
+  })
+  settleExchange(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('exchangeId', ParseUUIDPipe) exchangeId: string,
+    @Req() req: Request,
+    @Body() body?: PartnerReconActionDto,
+  ) {
+    return this.partnerReconciliationService.settle(
+      user.userId,
+      partnerId,
+      exchangeId,
+      resolveClientIp(req),
+      body?.reason ?? null,
+    );
+  }
+
+  @Post(':partnerId/exchanges/:exchangeId/ops-notes')
+  @HttpCode(201)
+  @ApiOperation({ summary: 'B4-6 운영 대사 메모' })
+  addOpsNote(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('exchangeId', ParseUUIDPipe) exchangeId: string,
+    @Body() body: CreatePartnerExchangeOpsNoteDto,
+    @Req() req: Request,
+  ) {
+    return this.partnerReconciliationService.addNote(
+      user.userId,
+      partnerId,
+      exchangeId,
+      body,
+      resolveClientIp(req),
+    );
+  }
+
+  @Post(':partnerId/webhook-deliveries/:deliveryId/retry')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'B4-6 Webhook Delivery 재전송 (원장 불변)',
+  })
+  retryWebhookDelivery(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('deliveryId', ParseUUIDPipe) deliveryId: string,
+    @Req() req: Request,
+    @Body() body?: PartnerReconActionDto,
+  ) {
+    return this.partnerReconciliationService.retryWebhookDelivery(
+      user.userId,
+      partnerId,
+      deliveryId,
+      resolveClientIp(req),
+      body?.reason ?? null,
+    );
+  }
+
   @Patch(':partnerId/clients/:partnerClientId')
-  @ApiOperation({ summary: '업체 Client 수정 (name·webhook·scopes·origins)' })
+  @ApiOperation({
+    summary:
+      '업체 Client 수정 (name·webhook·processingModel·operationsBaseUrl·scopes·origins)',
+  })
   updateClient(
     @CurrentUser() user: AuthenticatedUser,
     @Param('partnerId', ParseUUIDPipe) partnerId: string,
@@ -404,6 +519,25 @@ export class AdminPartnersController {
     @Req() req: Request,
   ) {
     return this.partnerClientsService.rotateApiSecret(
+      user.userId,
+      partnerId,
+      partnerClientId,
+      body.reason,
+      resolveClientIp(req),
+    );
+  }
+
+  @Post(':partnerId/clients/:partnerClientId/rotate-webhook-secret')
+  @HttpCode(201)
+  @ApiOperation({ summary: 'Webhook Secret 회전 (원문 한 번만 반환)' })
+  rotateWebhookSecret(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('partnerId', ParseUUIDPipe) partnerId: string,
+    @Param('partnerClientId', ParseUUIDPipe) partnerClientId: string,
+    @Body() body: PartnerClientActionDto,
+    @Req() req: Request,
+  ) {
+    return this.partnerClientsService.rotateWebhookSecret(
       user.userId,
       partnerId,
       partnerClientId,

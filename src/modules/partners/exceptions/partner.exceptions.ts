@@ -430,6 +430,15 @@ export class PartnerDomainException {
     });
   }
 
+  /** Embed lock 후 다른 금액으로 재lock 시도 */
+  static paymentIntentAmountAlreadyLocked(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_PAYMENT_INTENT_AMOUNT_LOCKED',
+      message:
+        '이미 확정된 충전 금액이 있어요. 바꾸려면 취소 후 다시 시작해 주세요.',
+    });
+  }
+
   static paymentIntentUserMismatch(): ForbiddenException {
     return new ForbiddenException({
       code: 'PARTNER_PAYMENT_INTENT_USER_MISMATCH',
@@ -442,6 +451,115 @@ export class PartnerDomainException {
     return new BadRequestException({
       code: 'PARTNER_PAYMENT_INTENT_NOT_LINKED',
       message: '먼저 업체와 BRIT 계정을 연결해 주세요.',
+    });
+  }
+
+  static paymentIntentAmountRequired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PAYMENT_INTENT_AMOUNT_REQUIRED',
+      message: '충전 금액을 먼저 확정해 주세요.',
+    });
+  }
+
+  static paymentIntentInsufficientBalance(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_PAYMENT_INTENT_INSUFFICIENT_BALANCE',
+      message: '충전 가능 잔액이 부족해요. 금액을 바꿔 주세요.',
+    });
+  }
+
+  static exchangeNotFound(): NotFoundException {
+    return new NotFoundException({
+      code: 'PARTNER_EXCHANGE_NOT_FOUND',
+      message: '전환 거래를 찾을 수 없어요.',
+    });
+  }
+
+  static operationsNotConfigured(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_OPERATIONS_NOT_CONFIGURED',
+      message:
+        '업체 Operations URL·서명 키·처리 모델(BRIT_OPERATIONS)을 설정해 주세요.',
+    });
+  }
+
+  static operationsConfirmForbidden(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_OPERATIONS_CONFIRM_FORBIDDEN',
+      message:
+        '이 Client는 BRIT Operations로 지급합니다. confirm 적립을 사용할 수 없어요.',
+    });
+  }
+
+  static operationsUrlInvalid(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_OPERATIONS_URL_INVALID',
+      message:
+        'Operations URL이 올바르지 않아요. Sandbox는 localhost 허용, Production은 HTTPS·공인 호스트만 가능해요.',
+    });
+  }
+
+  static webhookUrlInvalid(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_WEBHOOK_URL_INVALID',
+      message:
+        'Webhook URL이 올바르지 않아요. Sandbox는 localhost 허용, Production은 HTTPS·공인 호스트만 가능해요.',
+    });
+  }
+
+  static settlementNotReady(externalStatus: string): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_SETTLEMENT_NOT_READY',
+      message: `외부 결과가 확정되지 않아 원장을 닫을 수 없어요. (${externalStatus})`,
+    });
+  }
+
+  static settlementConflict(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_SETTLEMENT_CONFLICT',
+      message: '이미 다른 최종 상태로 확정된 전환이에요.',
+    });
+  }
+
+  static settlementNotCharge(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_SETTLEMENT_NOT_CHARGE',
+      message: 'CHARGE 전환만 이 확정 경로를 사용할 수 있어요.',
+    });
+  }
+
+  static settlementEvidenceMissing(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_SETTLEMENT_EVIDENCE_MISSING',
+      message: '업체 지급 거래번호(partnerTransactionId)가 없어 확정할 수 없어요.',
+    });
+  }
+
+  static settlementLotsInvalid(): ConflictException {
+    return new ConflictException({
+      code: 'PARTNER_SETTLEMENT_LOTS_INVALID',
+      message: '잠금 Lot 할당이 금액과 맞지 않아요. 대사가 필요해요.',
+    });
+  }
+
+  static exchangePartnerMismatch(): NotFoundException {
+    return new NotFoundException({
+      code: 'PARTNER_EXCHANGE_PARTNER_MISMATCH',
+      message: '해당 업체의 전환 거래를 찾을 수 없어요.',
+    });
+  }
+
+  static webhookDeliveryNotFound(): NotFoundException {
+    return new NotFoundException({
+      code: 'PARTNER_WEBHOOK_DELIVERY_NOT_FOUND',
+      message: 'Webhook Delivery를 찾을 수 없어요.',
+    });
+  }
+
+  static opsNoteRequired(): BadRequestException {
+    return new BadRequestException({
+      code: 'PARTNER_OPS_NOTE_REQUIRED',
+      message: '운영 메모를 입력해 주세요.',
     });
   }
 }

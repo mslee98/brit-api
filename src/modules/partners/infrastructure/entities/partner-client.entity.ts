@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 
 import { PartnerClientEnvironment } from '../../domain/enums/partner-client-environment.enum';
+import { PartnerClientProcessingModel } from '../../domain/enums/partner-client-processing-model.enum';
 import { PartnerClientStatus } from '../../domain/enums/partner-client-status.enum';
 import { PartnerClientType } from '../../domain/enums/partner-client-type.enum';
 import { PartnerEntity } from './partner.entity';
@@ -51,6 +52,22 @@ export class PartnerClientEntity {
 
   @Column({ type: 'varchar', length: 500, name: 'webhook_url', nullable: true })
   webhookUrl!: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 30,
+    name: 'processing_model',
+    default: PartnerClientProcessingModel.LEGACY_CONFIRM,
+  })
+  processingModel!: PartnerClientProcessingModel;
+
+  @Column({
+    type: 'varchar',
+    length: 500,
+    name: 'operations_base_url',
+    nullable: true,
+  })
+  operationsBaseUrl!: string | null;
 
   @Column({
     type: 'varchar',

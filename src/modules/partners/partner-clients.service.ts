@@ -1,13 +1,16 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
 import { DataSource, In, Repository } from 'typeorm';
 
+import { encryptAccountNumber } from '../../common/utils/account-crypto.util';
 import { hashSecret } from '../../common/utils/password.util';
 import { AuditLogService } from '../admins/audit-log.service';
 import { AuditActionType } from '../admins/domain/enums/audit-action-type.enum';
 import { AuditTargetType } from '../admins/domain/enums/audit-target-type.enum';
 import { PartnerClientEnvironment } from './domain/enums/partner-client-environment.enum';
+import { PartnerClientProcessingModel } from './domain/enums/partner-client-processing-model.enum';
 import { PartnerClientScopeCode } from './domain/enums/partner-client-scope-code.enum';
 import { PartnerClientSecretStatus } from './domain/enums/partner-client-secret-status.enum';
 import { PartnerClientSecretType } from './domain/enums/partner-client-secret-type.enum';
@@ -31,6 +34,8 @@ import { PartnerClientScopeEntity } from './infrastructure/entities/partner-clie
 import { PartnerClientSecretEntity } from './infrastructure/entities/partner-client-secret.entity';
 import { PartnerClientEntity } from './infrastructure/entities/partner-client.entity';
 import { PartnerEntity } from './infrastructure/entities/partner.entity';
+import { assertSafeOperationsBaseUrl } from './utils/partner-operations-url.util';
+import { assertSafeWebhookUrl } from './utils/partner-webhook-url.util';
 
 export const PORTAL_ALLOWED_CLIENT_SCOPES: readonly PartnerClientScopeCode[] = [
   PartnerClientScopeCode.USER_LINK,
@@ -64,6 +69,7 @@ export class PartnerClientsService {
     private readonly secretRepository: Repository<PartnerClientSecretEntity>,
     private readonly auditLogService: AuditLogService,
     private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
   ) {}
 
   async listClients(partnerId: string): Promise<PartnerClientResponseDto[]> {
@@ -125,6 +131,17 @@ export class PartnerClientsService {
         throw PartnerDomainException.terminated();
       }
 
+      let webhookUrl: string | null = dto.webhookUrl?.trim() || null;
+      if (webhookUrl) {
+        try {
+          webhookUrl = assertSafeWebhookUrl(webhookUrl, dto.environment)
+            .toString()
+            .replace(/\/$/, '');
+        } catch {
+          throw PartnerDomainException.webhookUrlInvalid();
+        }
+      }
+
       const clientId = this.buildPublicClientId(partner.code, dto.environment);
       const client = clientRepo.create({
         partnerId,
@@ -132,7 +149,7 @@ export class PartnerClientsService {
         clientType: dto.clientType,
         environment: dto.environment,
         name: dto.name.trim(),
-        webhookUrl: dto.webhookUrl?.trim() || null,
+        webhookUrl,
         status: PartnerClientStatus.ACTIVE,
       });
       const saved = await clientRepo.save(client);
@@ -173,19 +190,12 @@ export class PartnerClientsService {
         );
       }
 
+      let webhookSecretPlaintext: string | null = null;
       if (saved.webhookUrl) {
-        const webhookPlain = this.generateSecretPlaintext();
-        await secretRepo.save(
-          secretRepo.create({
-            partnerClientId: saved.id,
-            secretType: PartnerClientSecretType.WEBHOOK_SECRET,
-            secretHash: await hashSecret(webhookPlain),
-            status: PartnerClientSecretStatus.ACTIVE,
-            expiresAt: null,
-            revokedAt: null,
-          }),
+        webhookSecretPlaintext = await this.issueWebhookSecretInTransaction(
+          secretRepo,
+          saved.id,
         );
-        // Webhook secret은 이번 응답에 노출하지 않는다(후속 회전 API에서 다룸).
       }
 
       await this.auditLogService.writeInTransaction(manager, {
@@ -201,6 +211,7 @@ export class PartnerClientsService {
           environment: saved.environment,
           scopes: dto.scopes,
           origins,
+          issuedWebhookSecret: webhookSecretPlaintext != null,
         },
         reason: dto.reason,
         ipAddress,
@@ -211,6 +222,7 @@ export class PartnerClientsService {
         origins,
         hasActiveApiSecret: apiSecretPlaintext != null,
         apiSecretPlaintext,
+        webhookSecretPlaintext,
       });
     });
   }
@@ -221,11 +233,12 @@ export class PartnerClientsService {
     partnerClientId: string,
     dto: UpdatePartnerClientDto,
     ipAddress: string | null,
-  ): Promise<PartnerClientResponseDto> {
+  ): Promise<PartnerClientResponseDto | PartnerClientIssuedResponseDto> {
     return this.dataSource.transaction(async (manager) => {
       const clientRepo = manager.getRepository(PartnerClientEntity);
       const scopeRepo = manager.getRepository(PartnerClientScopeEntity);
       const originRepo = manager.getRepository(PartnerClientOriginEntity);
+      const secretRepo = manager.getRepository(PartnerClientSecretEntity);
 
       const client = await clientRepo.findOne({
         where: { id: partnerClientId, partnerId },
@@ -241,13 +254,46 @@ export class PartnerClientsService {
       const before = {
         name: client.name,
         webhookUrl: client.webhookUrl,
+        processingModel: client.processingModel,
+        operationsBaseUrl: client.operationsBaseUrl,
         scopes: client.scopes?.map((s) => s.scopeCode) ?? [],
         origins: client.origins?.map((o) => o.origin) ?? [],
       };
 
       if (dto.name !== undefined) client.name = dto.name.trim();
       if (dto.webhookUrl !== undefined) {
-        client.webhookUrl = dto.webhookUrl?.trim() || null;
+        const raw = dto.webhookUrl?.trim() || null;
+        if (raw) {
+          try {
+            client.webhookUrl = assertSafeWebhookUrl(raw, client.environment)
+              .toString()
+              .replace(/\/$/, '');
+          } catch {
+            throw PartnerDomainException.webhookUrlInvalid();
+          }
+        } else {
+          client.webhookUrl = null;
+        }
+      }
+      if (dto.processingModel !== undefined) {
+        client.processingModel = dto.processingModel;
+      }
+      if (dto.operationsBaseUrl !== undefined) {
+        const raw = dto.operationsBaseUrl?.trim() || null;
+        if (raw) {
+          try {
+            client.operationsBaseUrl = assertSafeOperationsBaseUrl(
+              raw,
+              client.environment,
+            )
+              .toString()
+              .replace(/\/$/, '');
+          } catch {
+            throw PartnerDomainException.operationsUrlInvalid();
+          }
+        } else {
+          client.operationsBaseUrl = null;
+        }
       }
       await clientRepo.save(client);
 
@@ -285,6 +331,64 @@ export class PartnerClientsService {
         origins = cleaned;
       }
 
+      let operationsSigningSecretPlaintext: string | null = null;
+      const becameBritOperations =
+        client.processingModel ===
+          PartnerClientProcessingModel.BRIT_OPERATIONS &&
+        before.processingModel !==
+          PartnerClientProcessingModel.BRIT_OPERATIONS;
+      const shouldIssueOpsSecret =
+        dto.issueOperationsSigningSecret === true || becameBritOperations;
+
+      if (shouldIssueOpsSecret) {
+        const now = new Date();
+        const actives = await secretRepo.find({
+          where: {
+            partnerClientId: client.id,
+            secretType: PartnerClientSecretType.OPERATIONS_SIGNING_SECRET,
+            status: PartnerClientSecretStatus.ACTIVE,
+          },
+        });
+        for (const secret of actives) {
+          secret.status = PartnerClientSecretStatus.REVOKED;
+          secret.revokedAt = now;
+          await secretRepo.save(secret);
+        }
+        operationsSigningSecretPlaintext = this.generateSecretPlaintext();
+        const encryptionKey = this.configService.getOrThrow<string>(
+          'ACCOUNT_ENCRYPTION_KEY',
+        );
+        await secretRepo.save(
+          secretRepo.create({
+            partnerClientId: client.id,
+            secretType: PartnerClientSecretType.OPERATIONS_SIGNING_SECRET,
+            secretHash: await hashSecret(operationsSigningSecretPlaintext),
+            secretEncrypted: encryptAccountNumber(
+              operationsSigningSecretPlaintext,
+              encryptionKey,
+            ),
+            status: PartnerClientSecretStatus.ACTIVE,
+            expiresAt: null,
+            revokedAt: null,
+          }),
+        );
+      }
+
+      let webhookSecretPlaintext: string | null = null;
+      const webhookNewlySet =
+        Boolean(client.webhookUrl) && !before.webhookUrl;
+      const shouldIssueWebhookSecret =
+        dto.issueWebhookSecret === true || webhookNewlySet;
+      if (shouldIssueWebhookSecret) {
+        if (!client.webhookUrl) {
+          throw PartnerDomainException.webhookUrlInvalid();
+        }
+        webhookSecretPlaintext = await this.issueWebhookSecretInTransaction(
+          secretRepo,
+          client.id,
+        );
+      }
+
       await this.auditLogService.writeInTransaction(manager, {
         actorUserId,
         actionType: AuditActionType.UPDATE_PARTNER_CLIENT,
@@ -294,8 +398,12 @@ export class PartnerClientsService {
         afterData: {
           name: client.name,
           webhookUrl: client.webhookUrl,
+          processingModel: client.processingModel,
+          operationsBaseUrl: client.operationsBaseUrl,
           scopes,
           origins,
+          issuedOperationsSigningSecret: operationsSigningSecretPlaintext != null,
+          issuedWebhookSecret: webhookSecretPlaintext != null,
         },
         reason: dto.reason,
         ipAddress,
@@ -305,10 +413,73 @@ export class PartnerClientsService {
         [client.id],
         manager.getRepository(PartnerClientSecretEntity),
       );
+      if (operationsSigningSecretPlaintext || webhookSecretPlaintext) {
+        return PartnerClientIssuedResponseDto.fromIssued(client, {
+          scopes,
+          origins,
+          hasActiveApiSecret: secretFlags.has(client.id),
+          apiSecretPlaintext: null,
+          operationsSigningSecretPlaintext,
+          webhookSecretPlaintext,
+        });
+      }
       return PartnerClientResponseDto.from(client, {
         scopes,
         origins,
         hasActiveApiSecret: secretFlags.has(client.id),
+      });
+    });
+  }
+
+  async rotateWebhookSecret(
+    actorUserId: string,
+    partnerId: string,
+    partnerClientId: string,
+    reason: string,
+    ipAddress: string | null,
+  ): Promise<PartnerClientIssuedResponseDto> {
+    return this.dataSource.transaction(async (manager) => {
+      const clientRepo = manager.getRepository(PartnerClientEntity);
+      const secretRepo = manager.getRepository(PartnerClientSecretEntity);
+
+      const client = await clientRepo.findOne({
+        where: { id: partnerClientId, partnerId },
+        relations: { scopes: true, origins: true },
+      });
+      if (!client) {
+        throw PartnerDomainException.clientNotFound();
+      }
+      if (client.status !== PartnerClientStatus.ACTIVE) {
+        throw PartnerDomainException.clientNotActive();
+      }
+      if (!client.webhookUrl) {
+        throw PartnerDomainException.webhookUrlInvalid();
+      }
+
+      const webhookSecretPlaintext =
+        await this.issueWebhookSecretInTransaction(secretRepo, client.id);
+
+      await this.auditLogService.writeInTransaction(manager, {
+        actorUserId,
+        actionType: AuditActionType.ROTATE_PARTNER_CLIENT_SECRET,
+        targetType: AuditTargetType.PARTNER_CLIENT,
+        targetId: client.id,
+        beforeData: null,
+        afterData: { secretType: PartnerClientSecretType.WEBHOOK_SECRET },
+        reason,
+        ipAddress,
+      });
+
+      const secretFlags = await this.activeApiSecretFlags(
+        [client.id],
+        secretRepo,
+      );
+      return PartnerClientIssuedResponseDto.fromIssued(client, {
+        scopes: client.scopes?.map((s) => s.scopeCode) ?? [],
+        origins: client.origins?.map((o) => o.origin) ?? [],
+        hasActiveApiSecret: secretFlags.has(client.id),
+        apiSecretPlaintext: null,
+        webhookSecretPlaintext,
       });
     });
   }
@@ -587,6 +758,46 @@ export class PartnerClientsService {
       environment === PartnerClientEnvironment.PRODUCTION ? 'prod' : 'sandbox';
     const suffix = randomBytes(4).toString('hex');
     return `${partnerCode.toLowerCase()}_${env}_${suffix}`;
+  }
+
+  /**
+   * ACTIVE WEBHOOK_SECRET을 폐기하고 새 키를 암호화 저장한 뒤 원문을 반환한다.
+   * B4-5 이전 해시-only 행은 서명에 쓸 수 없으므로 회전이 필요하다.
+   */
+  private async issueWebhookSecretInTransaction(
+    secretRepo: Repository<PartnerClientSecretEntity>,
+    partnerClientId: string,
+  ): Promise<string> {
+    const now = new Date();
+    const actives = await secretRepo.find({
+      where: {
+        partnerClientId,
+        secretType: PartnerClientSecretType.WEBHOOK_SECRET,
+        status: PartnerClientSecretStatus.ACTIVE,
+      },
+    });
+    for (const secret of actives) {
+      secret.status = PartnerClientSecretStatus.REVOKED;
+      secret.revokedAt = now;
+      await secretRepo.save(secret);
+    }
+
+    const plaintext = this.generateSecretPlaintext();
+    const encryptionKey = this.configService.getOrThrow<string>(
+      'ACCOUNT_ENCRYPTION_KEY',
+    );
+    await secretRepo.save(
+      secretRepo.create({
+        partnerClientId,
+        secretType: PartnerClientSecretType.WEBHOOK_SECRET,
+        secretHash: await hashSecret(plaintext),
+        secretEncrypted: encryptAccountNumber(plaintext, encryptionKey),
+        status: PartnerClientSecretStatus.ACTIVE,
+        expiresAt: null,
+        revokedAt: null,
+      }),
+    );
+    return plaintext;
   }
 
   private generateSecretPlaintext(): string {
